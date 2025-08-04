@@ -1,0 +1,179 @@
+name: Sync master + Mirror Upstream PRs
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # every hour
+  workflow_dispatch:
+
+jobs:
+  sync-master:
+    name: Sync master Branch from Upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and sync
+        run: |
+          git remote add upstream https://github.com/golang/go.git
+          git fetch upstream
+          git checkout -B master upstream/master
+          git push origin master --force
+
+  mirror-prs:
+    name: Mirror and Sync PRs
+    needs: sync-master
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Set up Node and install GitHub CLI
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install gh -y
+
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GH_PAT }}" | gh auth login --with-token
+
+      - name: Set environment variables
+        run: |
+          echo "REPO_NAME=$(basename $GITHUB_REPOSITORY)" >> $GITHUB_ENV
+          echo "FORK_OWNER=$(echo $GITHUB_REPOSITORY | cut -d'/' -f1)" >> $GITHUB_ENV
+          echo "UPSTREAM_OWNER=vercel" >> $GITHUB_ENV
+
+      - name: Add upstream and fetch PRs
+        run: |
+          git remote add upstream https://github.com/${UPSTREAM_OWNER}/${REPO_NAME}.git
+          git fetch upstream
+
+      - name: Mirror open upstream PRs
+        run: |
+          PRS=$(gh pr list -R "${UPSTREAM_OWNER}/${REPO_NAME}" --state open --json number,headRefName,title,body --jq ".[] | @base64")
+
+          for line in $PRS; do
+            pr_info=$(echo "$line" | base64 --decode)
+            pr_num=$(echo "$pr_info" | jq -r '.number')
+            pr_branch=$(echo "$pr_info" | jq -r '.headRefName')
+            pr_title=$(echo "$pr_info" | jq -r '.title')
+            pr_body=$(echo "$pr_info" | jq -r '.body // ""')
+          upstream_ref="refs/pull/$pr_num/head"
+
+          echo "🔄 Processing upstream PR #$pr_num from branch '$pr_branch'..."
+
+          # Fetch the upstream PR into a local branch
+          git fetch upstream "$upstream_ref:$pr_branch" || {
+            echo "❌ Failed to fetch upstream PR #$pr_num ($pr_branch)"
+            continue
+          }
+
+          # Push the branch to your fork
+          git push origin "$pr_branch" --force || {
+            echo "❌ Failed to push $pr_branch to origin"
+            continue
+          }
+
+          # Check if the PR has actual changes
+          if git diff --quiet origin/master origin/$pr_branch; then
+            echo "⚠️ No changes between master and $pr_branch — skipping PR"
+            continue
+          fi
+
+          exists=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --head "$pr_branch" --json number --jq '.[0].number')
+
+          if [ -z "$exists" ]; then
+            echo "✅ Creating fork PR for upstream PR #$pr_num"
+
+            # Final verification that the branch exists remotely
+            if git ls-remote origin "refs/heads/$pr_branch" | grep -q "$pr_branch"; then
+
+              # Prepare the body with mirror info appended
+              mirror_footer=$'\n\n---\n🔄 **This is a mirror of [upstream PR #'"$pr_num"'](https://github.com/'"${UPSTREAM_OWNER}"'/'"${REPO_NAME}"'/pull/'"$pr_num"')**'
+              
+              # Combine original body with mirror footer
+              full_body="$pr_body$mirror_footer"
+              
+              gh pr create \
+                -R "$GITHUB_REPOSITORY" \
+                --base master \
+                --head "$pr_branch" \
+                --title "$pr_title" \
+                --body "$full_body" \
+                || echo "❌ gh pr create failed for PR #$pr_num"
+            else
+              echo "❌ Remote branch $pr_branch not found on origin — skipping PR creation"
+            fi
+
+          else
+            echo "ℹ️ Fork PR already exists for #$pr_num"
+          fi
+          done
+
+      - name: Close mirrored fork PRs that are closed upstream
+        run: |
+          # Get all open PRs in your fork
+          echo "🔍 Getting list of open fork PRs..."
+          
+          # Debug: Show raw JSON output first
+          echo "📝 Raw PR data from fork repository ($GITHUB_REPOSITORY):"
+          gh pr list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number,headRefName,title || echo "❌ Failed to get PR list"
+          
+          # Get the count first
+          pr_count=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number | jq '. | length')
+          echo "📊 Found $pr_count open PRs in fork ($GITHUB_REPOSITORY)"
+          
+          # Get formatted data
+          fork_prs=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --limit 1000 --json number,headRefName | jq -r ".[] | [.number, .headRefName] | @tsv")
+
+          if [ -z "$fork_prs" ]; then
+            echo "ℹ️ No open PRs found in fork (or jq processing failed)"
+            echo "🔍 Trying alternative approach..."
+            # Alternative: get data without jq processing first
+            gh pr list -R "$GITHUB_REPOSITORY" --state open --limit 100
+            exit 0
+          fi
+          
+          echo "📝 Processed fork PRs data:"
+          echo "$fork_prs"
+
+          while IFS=$'\t' read -r fork_pr_num head_branch; do
+            echo "🔍 Checking fork PR #$fork_pr_num with branch '$head_branch'..."
+            
+            # Check if there's a corresponding upstream PR for this branch and its state
+            upstream_pr_state=$(gh pr list -R "${UPSTREAM_OWNER}/${REPO_NAME}" --head "$head_branch" --json state | jq -r ".[0].state // \"not_found\"")
+            
+            if [ "$upstream_pr_state" = "not_found" ]; then
+              echo "🔒 Closing fork PR #$fork_pr_num (no corresponding upstream PR found for branch '$head_branch')"
+              gh pr close "$fork_pr_num" -R "$GITHUB_REPOSITORY" --delete-branch || echo "❌ Failed to close PR #$fork_pr_num"
+            elif [ "$upstream_pr_state" = "CLOSED" ] || [ "$upstream_pr_state" = "MERGED" ]; then
+              echo "� Closing fork PR #$fork_pr_num (upstream PR for branch '$head_branch' is $upstream_pr_state)"
+              gh pr close "$fork_pr_num" -R "$GITHUB_REPOSITORY" --delete-branch || echo "❌ Failed to close PR #$fork_pr_num"
+            elif [ "$upstream_pr_state" = "OPEN" ]; then
+              echo "✅ Fork PR #$fork_pr_num stays open (upstream PR for branch '$head_branch' is still OPEN)"
+            else
+              echo "⚠️ Unknown upstream PR state '$upstream_pr_state' for branch '$head_branch' - keeping fork PR #$fork_pr_num open"
+            fi
+          done <<< "$fork_prs"
