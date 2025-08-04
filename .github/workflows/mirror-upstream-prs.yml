@@ -63,7 +63,7 @@ jobs:
         run: |
           echo "REPO_NAME=$(basename $GITHUB_REPOSITORY)" >> $GITHUB_ENV
           echo "FORK_OWNER=$(echo $GITHUB_REPOSITORY | cut -d'/' -f1)" >> $GITHUB_ENV
-          echo "UPSTREAM_OWNER=vercel" >> $GITHUB_ENV
+          echo "UPSTREAM_OWNER=golang" >> $GITHUB_ENV
 
       - name: Add upstream and fetch PRs
         run: |
