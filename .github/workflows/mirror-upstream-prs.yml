@@ -110,8 +110,8 @@ jobs:
             # Final verification that the branch exists remotely
             if git ls-remote origin "refs/heads/$pr_branch" | grep -q "$pr_branch"; then
 
-              # Prepare the body with mirror info appended
-              mirror_footer=$'\n\n---\n🔄 **This is a mirror of [upstream PR #'"$pr_num"'](https://github.com/'"${UPSTREAM_OWNER}"'/'"${REPO_NAME}"'/pull/'"$pr_num"')**'
+              # Prepare the body with mirror info appended (without GitHub link)
+              mirror_footer=$'\n\n---\n🔄 **This is a mirror of upstream PR #'"$pr_num"'**'
               
               # Combine original body with mirror footer
               full_body="$pr_body$mirror_footer"
