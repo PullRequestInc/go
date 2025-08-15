@@ -1080,8 +1080,8 @@ func TestDetectFinalizerAndCleanupLeaks(t *testing.T) {
 	if len(sp) != 2 {
 		t.Fatalf("expected the runtime to throw, got:\n%s", got)
 	}
-	if strings.Count(sp[0], "is reachable from") != 2 {
-		t.Fatalf("expected exactly two leaked cleanups and/or finalizers, got:\n%s", got)
+	if count := strings.Count(sp[0], "is reachable from"); count != 5 {
+		t.Fatalf("expected exactly five leaked cleanups and/or finalizers, got: %d \n%s", count, got)
 	}
 	// N.B. Disable in race mode and in asan mode. Both disable the tiny allocator.
 	wantSymbolizedLocations := 2
@@ -1091,7 +1091,7 @@ func TestDetectFinalizerAndCleanupLeaks(t *testing.T) {
 		}
 		wantSymbolizedLocations++
 	}
-	if strings.Count(sp[0], "main.DetectFinalizerAndCleanupLeaks()") != wantSymbolizedLocations {
-		t.Fatalf("expected %d symbolized locations, got:\n%s", wantSymbolizedLocations, got)
+	if actual := strings.Count(sp[0], "main.DetectFinalizerAndCleanupLeaks()"); actual != wantSymbolizedLocations {
+		t.Fatalf("expected %d symbolized locations, actual %d symbolized locations, got:\n%s", actual, wantSymbolizedLocations, got)
 	}
 }
