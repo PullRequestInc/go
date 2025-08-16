@@ -1072,24 +1072,6 @@ func regV(r uint32) uint32 {
 	return regVal(r, REG_V0, REG_V31)
 }
 
-// regAddr extracts a register from an Addr.
-func regAddr(a obj.Addr, min, max uint32) uint32 {
-	if a.Type != obj.TYPE_REG {
-		panic(fmt.Sprintf("ill typed: %+v", a))
-	}
-	return regVal(uint32(a.Reg), min, max)
-}
-
-// regIAddr extracts the integer register from an Addr.
-func regIAddr(a obj.Addr) uint32 {
-	return regAddr(a, REG_X0, REG_X31)
-}
-
-// regFAddr extracts the float register from an Addr.
-func regFAddr(a obj.Addr) uint32 {
-	return regAddr(a, REG_F0, REG_F31)
-}
-
 // immEven checks that the immediate is a multiple of two. If it
 // is not, an error is returned.
 func immEven(x int64) error {
@@ -2918,12 +2900,23 @@ func instructionsForStore(p *obj.Prog, as obj.As, rd int16) []*instruction {
 }
 
 func instructionsForTLS(p *obj.Prog, ins *instruction) []*instruction {
-	insAddTP := &instruction{as: AADD, rd: REG_TMP, rs1: REG_TMP, rs2: REG_TP}
-
 	var inss []*instruction
-	if p.Ctxt.Flag_shared {
+	
+	// For shared libraries in c-shared build mode, use general dynamic TLS model
+	if p.Ctxt.Flag_shared && p.Ctxt.Pkgpath != "main" {
+		// TLS general-dynamic mode - AUIPC + ADDI + CALL __tls_get_addr sequence
+		// The resulting address is returned in A0, then load/store from that address
+		insAUIPC := &instruction{as: AAUIPC, rd: REG_A0}  // A0 = PC + hi20(sym@tlsgd)
+		insADDI := &instruction{as: AADDI, rd: REG_A0, rs1: REG_A0}  // A0 = A0 + lo12(sym@tlsgd)
+		insCALL := &instruction{as: AJAL, rd: REG_RA}  // CALL __tls_get_addr
+		
+		// After the call, A0 contains the TLS variable address, so use it directly
+		ins.rs1 = REG_A0
+		inss = []*instruction{insAUIPC, insADDI, insCALL, ins}
+	} else if p.Ctxt.Flag_shared {
 		// TLS initial-exec mode - load TLS offset from GOT, add the thread pointer
 		// register, then load from or store to the resulting memory location.
+		insAddTP := &instruction{as: AADD, rd: REG_TMP, rs1: REG_TMP, rs2: REG_TP}
 		insAUIPC := &instruction{as: AAUIPC, rd: REG_TMP}
 		insLoadTLSOffset := &instruction{as: ALD, rd: REG_TMP, rs1: REG_TMP}
 		inss = []*instruction{insAUIPC, insLoadTLSOffset, insAddTP, ins}
@@ -2933,6 +2926,7 @@ func instructionsForTLS(p *obj.Prog, ins *instruction) []*instruction {
 		// memory location. Note that this differs from the suggested three
 		// instruction sequence, as the Go linker does not currently have an
 		// easy way to handle relocation across 12 bytes of machine code.
+		insAddTP := &instruction{as: AADD, rd: REG_TMP, rs1: REG_TMP, rs2: REG_TP}
 		insLUI := &instruction{as: ALUI, rd: REG_TMP}
 		insADDIW := &instruction{as: AADDIW, rd: REG_TMP, rs1: REG_TMP}
 		inss = []*instruction{insLUI, insADDIW, insAddTP, ins}
@@ -3910,8 +3904,8 @@ func assemble(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 				break
 			}
 			if addr.Sym.Type == objabi.STLSBSS {
-				if ctxt.Flag_shared {
-					rt = objabi.R_RISCV_TLS_IE
+				if ctxt.ShouldUseTLSGD() {
+					rt = objabi.R_RISCV_TLS_GD
 				} else {
 					rt = objabi.R_RISCV_TLS_LE
 				}

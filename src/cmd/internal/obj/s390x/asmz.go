@@ -229,6 +229,7 @@ var optab = []Optab{
 	{i: 93, as: AMOVD, a1: C_GOTADDR, a6: C_REG},
 	{i: 94, as: AMOVD, a1: C_TLS_LE, a6: C_REG},
 	{i: 95, as: AMOVD, a1: C_TLS_IE, a6: C_REG},
+	{i: 129, as: AMOVD, a1: C_TLS_GD, a6: C_REG},
 
 	// system call
 	{i: 5, as: ASYSCALL},
@@ -581,8 +582,8 @@ func (c *ctxtz) aclass(a *obj.Addr) int {
 			}
 			c.instoffset = a.Offset
 			if a.Sym.Type == objabi.STLSBSS {
-				if c.ctxt.Flag_shared {
-					return C_TLS_IE // initial exec model
+				if c.ctxt.ShouldUseTLSGD() {
+					return C_TLS_GD // general dynamic model
 				}
 				return C_TLS_LE // local exec model
 			}
@@ -2677,20 +2678,6 @@ func (c *ctxtz) addrilreloc(sym *obj.LSym, add int64) {
 	})
 }
 
-func (c *ctxtz) addrilrelocoffset(sym *obj.LSym, add, offset int64) {
-	if sym == nil {
-		c.ctxt.Diag("require symbol to apply relocation")
-	}
-	offset += int64(2) // relocation offset from start of instruction
-	c.cursym.AddRel(c.ctxt, obj.Reloc{
-		Type: objabi.R_PCRELDBL,
-		Off:  int32(c.pc + offset),
-		Siz:  4,
-		Sym:  sym,
-		Add:  add + offset + 4,
-	})
-}
-
 // Add a CALL relocation for the immediate in a RIL style instruction.
 // The addend will be adjusted as required.
 func (c *ctxtz) addcallreloc(sym *obj.LSym, add int64) {
@@ -4496,6 +4483,39 @@ func (c *ctxtz) asmout(p *obj.Prog, asm *[]byte) {
 		m5 := singleElementMask(p.As)
 		m6 := uint32(c.vregoff(&p.From))
 		zVRRc(op, uint32(p.To.Reg), uint32(p.Reg), uint32(p.GetFrom3().Reg), m6, m5, m4, asm)
+
+	case 129: // TLS general dynamic model
+		// Assembly sequence for s390x TLS GD:
+		// lg %r2, <var>@gotntpoff(%r12)  // Load TLS offset
+		// larl %r1, <var>@tlsgd           // Load TLS descriptor address
+		// brasl %r14, __tls_get_addr@plt  // Call resolver
+		// Result is in %r2
+		
+		// Load TLS descriptor address into R2
+		zRIL(_b, op_LARL, uint32(REG_R2), 0, asm)
+		c.cursym.AddRel(c.ctxt, obj.Reloc{
+			Type: objabi.R_390_TLS_GD64,
+			Off:  int32(c.pc + 2),
+			Siz:  4,
+			Sym:  p.From.Sym,
+		})
+		
+		// Call __tls_get_addr@plt
+		asm2 := (*asm)[6:]
+		zRIL(_b, op_BRASL, uint32(REG_LR), 0, &asm2)
+		tlsGetAddr := c.ctxt.Lookup("__tls_get_addr")
+		c.cursym.AddRel(c.ctxt, obj.Reloc{
+			Type: objabi.R_CALL,
+			Off:  int32(c.pc + 8),
+			Siz:  4,
+			Sym:  tlsGetAddr,
+		})
+		
+		// Move result from R2 to target register if needed
+		if p.To.Reg != REG_R2 {
+			asm3 := (*asm)[12:]
+			zRRE(op_LGR, uint32(p.To.Reg), uint32(REG_R2), &asm3)
+		}
 	}
 }
 
@@ -4745,16 +4765,6 @@ func zI(op, i1 uint32, asm *[]byte) {
 	*asm = append(*asm, uint8(op>>8), uint8(i1))
 }
 
-func zMII(op, m1, ri2, ri3 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		(uint8(m1)<<4)|uint8((ri2>>8)&0x0F),
-		uint8(ri2),
-		uint8(ri3>>16),
-		uint8(ri3>>8),
-		uint8(ri3))
-}
-
 func zRI(op, r1_m1, i2_ri2 uint32, asm *[]byte) {
 	*asm = append(*asm,
 		uint8(op>>8),
@@ -4807,16 +4817,6 @@ func zRIL(f form, op, r1_m1, i2_ri2 uint32, asm *[]byte) {
 		uint8(i2_ri2))
 }
 
-func zRIS(op, r1, m3, b4, d4, i2 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		(uint8(r1)<<4)|uint8(m3&0x0F),
-		(uint8(b4)<<4)|(uint8(d4>>8)&0x0F),
-		uint8(d4),
-		uint8(i2),
-		uint8(op))
-}
-
 func zRR(op, r1, r2 uint32, asm *[]byte) {
 	*asm = append(*asm, uint8(op>>8), (uint8(r1)<<4)|uint8(r2&0x0F))
 }
@@ -4845,39 +4845,12 @@ func zRRF(op, r3_m3, m4, r1, r2 uint32, asm *[]byte) {
 		(uint8(r1)<<4)|uint8(r2&0x0F))
 }
 
-func zRRS(op, r1, r2, b4, d4, m3 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		(uint8(r1)<<4)|uint8(r2&0x0F),
-		(uint8(b4)<<4)|uint8((d4>>8)&0x0F),
-		uint8(d4),
-		uint8(m3)<<4,
-		uint8(op))
-}
-
 func zRS(op, r1, r3_m3, b2, d2 uint32, asm *[]byte) {
 	*asm = append(*asm,
 		uint8(op>>8),
 		(uint8(r1)<<4)|uint8(r3_m3&0x0F),
 		(uint8(b2)<<4)|uint8((d2>>8)&0x0F),
 		uint8(d2))
-}
-
-func zRSI(op, r1, r3, ri2 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		(uint8(r1)<<4)|uint8(r3&0x0F),
-		uint8(ri2>>8),
-		uint8(ri2))
-}
-
-func zRSL(op, l1, b2, d2 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		uint8(l1),
-		(uint8(b2)<<4)|uint8((d2>>8)&0x0F),
-		uint8(d2),
-		uint8(op))
 }
 
 func zRSY(op, r1, r3_m3, b2, d2 uint32, asm *[]byte) {
@@ -4906,16 +4879,6 @@ func zRXE(op, r1, x2, b2, d2, m3 uint32, asm *[]byte) {
 		(uint8(b2)<<4)|uint8((d2>>8)&0x0F),
 		uint8(d2),
 		uint8(m3)<<4,
-		uint8(op))
-}
-
-func zRXF(op, r3, x2, b2, d2, m1 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		(uint8(r3)<<4)|uint8(x2&0x0F),
-		(uint8(b2)<<4)|uint8((d2>>8)&0x0F),
-		uint8(d2),
-		uint8(m1)<<4,
 		uint8(op))
 }
 
@@ -4967,16 +4930,6 @@ func zSIY(op, i2, b1, d1 uint32, asm *[]byte) {
 		uint8(op))
 }
 
-func zSMI(op, m1, b3, d3, ri2 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		uint8(m1)<<4,
-		(uint8(b3)<<4)|uint8((d3>>8)&0x0F),
-		uint8(d3),
-		uint8(ri2>>8),
-		uint8(ri2))
-}
-
 // Expected argument values for the instruction formats.
 //
 // Format    a1  a2  a3  a4  a5  a6
@@ -5004,26 +4957,6 @@ func zSS(f form, op, l1_r1, l2_i3_r3, b1_b2, d1_d2, b2_b4, d2_d4 uint32, asm *[]
 		uint8(d1_d2),
 		(uint8(b2_b4)<<4)|uint8((d2_d4>>8)&0x0F),
 		uint8(d2_d4))
-}
-
-func zSSE(op, b1, d1, b2, d2 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		uint8(op),
-		(uint8(b1)<<4)|uint8((d1>>8)&0x0F),
-		uint8(d1),
-		(uint8(b2)<<4)|uint8((d2>>8)&0x0F),
-		uint8(d2))
-}
-
-func zSSF(op, r3, b1, d1, b2, d2 uint32, asm *[]byte) {
-	*asm = append(*asm,
-		uint8(op>>8),
-		(uint8(r3)<<4)|(uint8(op)&0x0F),
-		(uint8(b1)<<4)|uint8((d1>>8)&0x0F),
-		uint8(d1),
-		(uint8(b2)<<4)|uint8((d2>>8)&0x0F),
-		uint8(d2))
 }
 
 func rxb(va, vb, vc, vd uint32) uint8 {
