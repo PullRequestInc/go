@@ -121,6 +121,6 @@ type Flags struct {
 	// platforms.
 	RandomizedHeapBase64 bool
 
-	// GoroutineLeakFinderGC enables the Deadlock GC implementation.
-	GoroutineLeakFinderGC bool
+	// GoleakProfiler enables the Goleak profiler.
+	GoleakProfiler bool
 }
