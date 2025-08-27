@@ -478,6 +478,7 @@ var optab = []Optab{
 	{AMOVD, C_GOTADDR, C_NONE, C_NONE, C_ZREG, C_NONE, 71, 8, 0, 0, 0},
 	{AMOVD, C_TLS_LE, C_NONE, C_NONE, C_ZREG, C_NONE, 69, 4, 0, 0, 0},
 	{AMOVD, C_TLS_IE, C_NONE, C_NONE, C_ZREG, C_NONE, 70, 8, 0, 0, 0},
+	{AMOVD, C_TLS_GD, C_NONE, C_NONE, C_ZREG, C_NONE, 109, 16, 0, 0, 0},
 
 	{AFMOVS, C_FREG, C_NONE, C_NONE, C_ADDR, C_NONE, 64, 12, 0, 0, 0},
 	{AFMOVS, C_ADDR, C_NONE, C_NONE, C_FREG, C_NONE, 65, 12, 0, 0, 0},
@@ -892,8 +893,6 @@ var optab = []Optab{
 	{obj.ANOP, C_LCON, C_NONE, C_NONE, C_NONE, C_NONE, 0, 0, 0, 0, 0}, // nop variants, see #40689
 	{obj.ANOP, C_ZREG, C_NONE, C_NONE, C_NONE, C_NONE, 0, 0, 0, 0, 0},
 	{obj.ANOP, C_VREG, C_NONE, C_NONE, C_NONE, C_NONE, 0, 0, 0, 0, 0},
-	{obj.ADUFFZERO, C_NONE, C_NONE, C_NONE, C_SBRA, C_NONE, 5, 4, 0, 0, 0},   // same as AB/ABL
-	{obj.ADUFFCOPY, C_NONE, C_NONE, C_NONE, C_SBRA, C_NONE, 5, 4, 0, 0, 0},   // same as AB/ABL
 	{obj.APCALIGN, C_LCON, C_NONE, C_NONE, C_NONE, C_NONE, 0, 0, 0, 0, 0},    // align code
 	{obj.APCALIGNMAX, C_LCON, C_NONE, C_NONE, C_LCON, C_NONE, 0, 0, 0, 0, 0}, // align code, conditional
 }
@@ -1054,15 +1053,6 @@ var sysInstFields = map[SpecialOperand]struct {
 // Used for padding NOOP instruction
 const OP_NOOP = 0xd503201f
 
-// pcAlignPadLength returns the number of bytes required to align pc to alignedValue,
-// reporting an error if alignedValue is not a power of two or is out of range.
-func pcAlignPadLength(ctxt *obj.Link, pc int64, alignedValue int64) int {
-	if !((alignedValue&(alignedValue-1) == 0) && 8 <= alignedValue && alignedValue <= 2048) {
-		ctxt.Diag("alignment value of an instruction must be a power of two and in the range [8, 2048], got %d\n", alignedValue)
-	}
-	return int(-pc & (alignedValue - 1))
-}
-
 // size returns the size of the sequence of machine instructions when p is encoded with o.
 // Usually it just returns o.size directly, in some cases it checks whether the optimization
 // conditions are met, and if so returns the size of the optimized instruction sequence.
@@ -1207,10 +1197,6 @@ func span7(ctxt *obj.Link, cursym *obj.LSym, newprog obj.ProgAlloc) {
 
 type codeBuffer struct {
 	data *[]byte
-}
-
-func (cb *codeBuffer) pc() int64 {
-	return int64(len(*cb.data))
 }
 
 // Write a sequence of opcodes into the code buffer.
@@ -2115,8 +2101,10 @@ func (c *ctxt7) aclass(a *obj.Addr) int {
 			c.instoffset = a.Offset
 			if a.Sym != nil { // use relocation
 				if a.Sym.Type == objabi.STLSBSS {
-					if c.ctxt.Flag_shared {
-						return C_TLS_IE
+					// For c-shared/c-archive on standards-compliant systems,
+					// use general dynamic model for dlopen compatibility.
+					if c.ctxt.ShouldUseTLSGD() {
+						return C_TLS_GD
 					} else {
 						return C_TLS_LE
 					}
@@ -3310,9 +3298,7 @@ func buildop(ctxt *obj.Link) {
 			obj.AFUNCDATA,
 			obj.APCALIGN,
 			obj.APCALIGNMAX,
-			obj.APCDATA,
-			obj.ADUFFZERO,
-			obj.ADUFFCOPY:
+			obj.APCDATA:
 			break
 		}
 	}
@@ -5848,6 +5834,38 @@ func (c *ctxt7) asmout(p *obj.Prog, out []uint32) (count int) {
 			c.ctxt.Diag("illegal argument: %v\n", p)
 			break
 		}
+	
+	case 109: /* GD model TLS sequence: ADRP; LDR; ADD; BLR */
+		// General Dynamic TLS model generates a 4-instruction sequence
+		// to call __tls_get_addr (or equivalent)
+		//   ADRP R27, :tlsdesc:var
+		//   LDR  R27, [R27, :tlsdesc_lo12:var]
+		//   ADD  R0, R27, :tlsdesc_lo12:var
+		//   BLR  R27
+		// The output is the offset in R0 (p.To.Reg)
+		rt := p.To.Reg
+		
+		// ADRP R27, 0 (page address)
+		o1 = ADR(1, 0, REGRT2)
+		
+		// LDR R27, [R27, #0]
+		o2 = c.olsr12u(p, c.opldr(p, AMOVD), 0, REGRT2, REGRT2)
+		
+		// ADD R0, R27, #0 (prepare argument)
+		o3 = c.oaddi(p, AADD, 0, REGRT2, rt)
+		
+		// BLR R27 (call descriptor function)
+		o4 = 0xd63f0000 | uint32(REGRT2&31)<<5
+		
+		c.cursym.AddRel(c.ctxt, obj.Reloc{
+			Type: objabi.R_ARM64_TLS_GD,
+			Off:  int32(c.pc),
+			Siz:  16,
+			Sym:  p.From.Sym,
+		})
+		if p.From.Offset != 0 {
+			c.ctxt.Diag("invalid offset on TLS GD")
+		}
 	}
 	out[0] = o1
 	out[1] = o2
@@ -6984,7 +7002,7 @@ func (c *ctxt7) opbra(p *obj.Prog, a obj.As) uint32 {
 	case AB:
 		return 0<<31 | 5<<26 /* imm26 */
 
-	case obj.ADUFFZERO, obj.ADUFFCOPY, ABL:
+	case ABL:
 		return 1<<31 | 5<<26
 	}
 
