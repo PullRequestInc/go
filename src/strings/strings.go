@@ -379,7 +379,7 @@ var asciiSpace = [256]uint8{'\t': 1, '\n': 1, '\v': 1, '\f': 1, '\r': 1, ' ': 1}
 // Fields splits the string s around each instance of one or more consecutive white space
 // characters, as defined by [unicode.IsSpace], returning a slice of substrings of s or an
 // empty slice if s contains only white space. Every element of the returned slice is
-// non-empty. Unlike [Split], leading and trailing runs runs of white space characters
+// non-empty. Unlike [Split], leading and trailing runs of white space characters
 // are discarded.
 func Fields(s string) []string {
 	// First count the fields.
@@ -896,7 +896,7 @@ func TrimLeftFunc(s string, f func(rune) bool) string {
 // Unicode code points c satisfying f(c) removed.
 func TrimRightFunc(s string, f func(rune) bool) string {
 	i := lastIndexFunc(s, f, false)
-	if i >= 0 && s[i] >= utf8.RuneSelf {
+	if i >= 0 {
 		_, wid := utf8.DecodeRuneInString(s[i:])
 		i += wid
 	} else {
@@ -1028,10 +1028,7 @@ func trimLeftASCII(s string, as *asciiSet) string {
 
 func trimLeftUnicode(s, cutset string) string {
 	for len(s) > 0 {
-		r, n := rune(s[0]), 1
-		if r >= utf8.RuneSelf {
-			r, n = utf8.DecodeRuneInString(s)
-		}
+		r, n := utf8.DecodeRuneInString(s)
 		if !ContainsRune(cutset, r) {
 			break
 		}
@@ -1229,13 +1226,8 @@ hasUnicode:
 		}
 
 		// Extract first rune from second string.
-		var tr rune
-		if t[0] < utf8.RuneSelf {
-			tr, t = rune(t[0]), t[1:]
-		} else {
-			r, size := utf8.DecodeRuneInString(t)
-			tr, t = r, t[size:]
-		}
+		tr, size := utf8.DecodeRuneInString(t)
+		t = t[size:]
 
 		// If they match, keep going; if not, return false.
 
