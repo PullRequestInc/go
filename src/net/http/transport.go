@@ -325,6 +325,13 @@ func (t *Transport) readBufferSize() int {
 	return 4 << 10
 }
 
+func (t *Transport) maxHeaderResponseSize() int64 {
+	if t.MaxResponseHeaderBytes > 0 {
+		return t.MaxResponseHeaderBytes
+	}
+	return 10 << 20 // conservative default; same as http2
+}
+
 // Clone returns a deep copy of t's exported fields.
 func (t *Transport) Clone() *Transport {
 	t.nextProtoOnce.Do(t.onceSetNextProtoDefaults)
@@ -722,7 +729,7 @@ func (t *Transport) roundTrip(req *Request) (_ *Response, err error) {
 			if e, ok := err.(transportReadFromServerError); ok {
 				err = e.err
 			}
-			if b, ok := req.Body.(*readTrackingBody); ok && !b.didClose {
+			if b, ok := req.Body.(*readTrackingBody); ok && !b.didClose.Load() {
 				// Issue 49621: Close the request body if pconn.roundTrip
 				// didn't do so already. This can happen if the pconn
 				// write loop exits without reading the write request.
@@ -752,8 +759,8 @@ var errCannotRewind = errors.New("net/http: cannot rewind body after connection 
 
 type readTrackingBody struct {
 	io.ReadCloser
-	didRead  bool
-	didClose bool
+	didRead  bool // not atomic.Bool because only one goroutine (the user's) should be accessing
+	didClose atomic.Bool
 }
 
 func (r *readTrackingBody) Read(data []byte) (int, error) {
@@ -762,7 +769,9 @@ func (r *readTrackingBody) Read(data []byte) (int, error) {
 }
 
 func (r *readTrackingBody) Close() error {
-	r.didClose = true
+	if !r.didClose.CompareAndSwap(false, true) {
+		return nil
+	}
 	return r.ReadCloser.Close()
 }
 
@@ -784,10 +793,10 @@ func setupRewindBody(req *Request) *Request {
 // rewindBody takes care of closing req.Body when appropriate
 // (in all cases except when rewindBody returns req unmodified).
 func rewindBody(req *Request) (rewound *Request, err error) {
-	if req.Body == nil || req.Body == NoBody || (!req.Body.(*readTrackingBody).didRead && !req.Body.(*readTrackingBody).didClose) {
+	if req.Body == nil || req.Body == NoBody || (!req.Body.(*readTrackingBody).didRead && !req.Body.(*readTrackingBody).didClose.Load()) {
 		return req, nil // nothing to rewind
 	}
-	if !req.Body.(*readTrackingBody).didClose {
+	if !req.Body.(*readTrackingBody).didClose.Load() {
 		req.closeBody()
 	}
 	if req.GetBody == nil {
@@ -1869,7 +1878,7 @@ func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (pconn *pers
 			}
 			// Okay to use and discard buffered reader here, because
 			// TLS server will not speak until spoken to.
-			br := bufio.NewReader(conn)
+			br := bufio.NewReader(&io.LimitedReader{R: conn, N: t.maxHeaderResponseSize()})
 			resp, err = ReadResponse(br, connectReq)
 		}()
 		select {
@@ -2106,10 +2115,7 @@ type persistConn struct {
 }
 
 func (pc *persistConn) maxHeaderResponseSize() int64 {
-	if v := pc.t.MaxResponseHeaderBytes; v != 0 {
-		return v
-	}
-	return 10 << 20 // conservative default; same as http2
+	return pc.t.maxHeaderResponseSize()
 }
 
 func (pc *persistConn) Read(p []byte) (n int, err error) {

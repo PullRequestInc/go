@@ -31,6 +31,7 @@ const (
 	removeDeadValues                 = true
 
 	repZeroThreshold = 1408 // size beyond which we use REP STOS for zeroing
+	repMoveThreshold = 1408 // size beyond which we use REP MOVS for copying
 )
 
 // deadcode indicates whether rewrite should try to remove any values that become dead.
@@ -469,11 +470,10 @@ func ntz32(x int32) int { return bits.TrailingZeros32(uint32(x)) }
 func ntz16(x int16) int { return bits.TrailingZeros16(uint16(x)) }
 func ntz8(x int8) int   { return bits.TrailingZeros8(uint8(x)) }
 
-func oneBit(x int64) bool   { return x&(x-1) == 0 && x != 0 }
-func oneBit8(x int8) bool   { return x&(x-1) == 0 && x != 0 }
-func oneBit16(x int16) bool { return x&(x-1) == 0 && x != 0 }
-func oneBit32(x int32) bool { return x&(x-1) == 0 && x != 0 }
-func oneBit64(x int64) bool { return x&(x-1) == 0 && x != 0 }
+// oneBit reports whether x contains exactly one set bit.
+func oneBit[T int8 | int16 | int32 | int64](x T) bool {
+	return x&(x-1) == 0 && x != 0
+}
 
 // nto returns the number of trailing ones.
 func nto(x int64) int64 {
@@ -502,18 +502,6 @@ func isPowerOfTwo[T int8 | int16 | int32 | int64](n T) bool {
 // isUnsignedPowerOfTwo reports whether n is an unsigned power of 2.
 func isUnsignedPowerOfTwo[T uint8 | uint16 | uint32 | uint64](n T) bool {
 	return n != 0 && n&(n-1) == 0
-}
-
-// isUint64PowerOfTwo reports whether uint64(n) is a power of 2.
-func isUint64PowerOfTwo(in int64) bool {
-	n := uint64(in)
-	return n > 0 && n&(n-1) == 0
-}
-
-// isUint32PowerOfTwo reports whether uint32(n) is a power of 2.
-func isUint32PowerOfTwo(in int64) bool {
-	n := uint64(uint32(in))
-	return n > 0 && n&(n-1) == 0
 }
 
 // is32Bit reports whether n can be represented as a signed 32 bit integer.
@@ -637,49 +625,14 @@ func truncate64Fto32F(f float64) float32 {
 	return math.Float32frombits(r)
 }
 
-// extend32Fto64F converts a float32 value to a float64 value preserving the bit
-// pattern of the mantissa.
-func extend32Fto64F(f float32) float64 {
-	if !math.IsNaN(float64(f)) {
-		return float64(f)
-	}
-	// NaN bit patterns aren't necessarily preserved across conversion
-	// instructions so we need to do the conversion manually.
-	b := uint64(math.Float32bits(f))
-	//   | sign                  | exponent      | mantissa                    |
-	r := ((b << 32) & (1 << 63)) | (0x7ff << 52) | ((b & 0x7fffff) << (52 - 23))
-	return math.Float64frombits(r)
-}
-
 // DivisionNeedsFixUp reports whether the division needs fix-up code.
 func DivisionNeedsFixUp(v *Value) bool {
 	return v.AuxInt == 0
 }
 
-// auxFrom64F encodes a float64 value so it can be stored in an AuxInt.
-func auxFrom64F(f float64) int64 {
-	if f != f {
-		panic("can't encode a NaN in AuxInt field")
-	}
-	return int64(math.Float64bits(f))
-}
-
-// auxFrom32F encodes a float32 value so it can be stored in an AuxInt.
-func auxFrom32F(f float32) int64 {
-	if f != f {
-		panic("can't encode a NaN in AuxInt field")
-	}
-	return int64(math.Float64bits(extend32Fto64F(f)))
-}
-
 // auxTo32F decodes a float32 from the AuxInt value provided.
 func auxTo32F(i int64) float32 {
 	return truncate64Fto32F(math.Float64frombits(uint64(i)))
-}
-
-// auxTo64F decodes a float64 from the AuxInt value provided.
-func auxTo64F(i int64) float64 {
-	return math.Float64frombits(uint64(i))
 }
 
 func auxIntToBool(i int64) bool {
@@ -714,12 +667,6 @@ func auxIntToValAndOff(i int64) ValAndOff {
 }
 func auxIntToArm64BitField(i int64) arm64BitField {
 	return arm64BitField(i)
-}
-func auxIntToInt128(x int64) int128 {
-	if x != 0 {
-		panic("nonzero int128 not allowed")
-	}
-	return 0
 }
 func auxIntToFlagConstant(x int64) flagConstant {
 	return flagConstant(x)
@@ -761,12 +708,6 @@ func valAndOffToAuxInt(v ValAndOff) int64 {
 }
 func arm64BitFieldToAuxInt(v arm64BitField) int64 {
 	return int64(v)
-}
-func int128ToAuxInt(x int128) int64 {
-	if x != 0 {
-		panic("nonzero int128 not allowed")
-	}
-	return 0
 }
 func flagConstantToAuxInt(x flagConstant) int64 {
 	return int64(x)
@@ -836,23 +777,6 @@ func s390xRotateParamsToAux(r s390x.RotateParams) Aux {
 // uaddOvf reports whether unsigned a+b would overflow.
 func uaddOvf(a, b int64) bool {
 	return uint64(a)+uint64(b) < uint64(a)
-}
-
-// loadLSymOffset simulates reading a word at an offset into a
-// read-only symbol's runtime memory. If it would read a pointer to
-// another symbol, that symbol is returned. Otherwise, it returns nil.
-func loadLSymOffset(lsym *obj.LSym, offset int64) *obj.LSym {
-	if lsym.Type != objabi.SRODATA {
-		return nil
-	}
-
-	for _, r := range lsym.R {
-		if int64(r.Off) == offset && r.Type&^objabi.R_WEAK == objabi.R_ADDR && r.Add == 0 {
-			return r.Sym
-		}
-	}
-
-	return nil
 }
 
 func devirtLECall(v *Value, sym *obj.LSym) *Value {
@@ -1574,10 +1498,6 @@ func GetPPC64Shiftsh(auxint int64) int64 {
 
 func GetPPC64Shiftmb(auxint int64) int64 {
 	return int64(int8(auxint >> 8))
-}
-
-func GetPPC64Shiftme(auxint int64) int64 {
-	return int64(int8(auxint))
 }
 
 // Test if this value can encoded as a mask for a rlwinm like
