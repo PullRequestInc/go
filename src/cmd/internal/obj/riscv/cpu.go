@@ -407,6 +407,10 @@ const (
 	ACSRRSI
 	ACSRRCI
 
+	// 11.1: Integer Conditional Operations (Zicond)
+	ACZEROEQZ
+	ACZERONEZ
+
 	// 13.1: Multiplication Operations
 	AMUL
 	AMULH
