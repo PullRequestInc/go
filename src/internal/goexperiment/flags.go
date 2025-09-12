@@ -121,6 +121,6 @@ type Flags struct {
 	// platforms.
 	RandomizedHeapBase64 bool
 
-	// GoleakProfiler enables the Goleak profiler.
-	GoleakProfiler bool
+	// GoleakProfile enables the collection of goroutine leak profiles.
+	GoleakProfile bool
 }
