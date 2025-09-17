@@ -677,7 +677,7 @@ func (t *tester) registerTests() {
 			}
 			t.registerStdTest(pkg)
 		}
-		if t.race {
+		if t.race && !t.short {
 			for _, pkg := range pkgs {
 				if t.packageHasBenchmarks(pkg) {
 					t.registerRaceBenchTest(pkg)
@@ -1211,7 +1211,7 @@ func (t *tester) internalLinkPIE() bool {
 	case "darwin-amd64", "darwin-arm64",
 		"linux-amd64", "linux-arm64", "linux-loong64", "linux-ppc64le",
 		"android-arm64",
-		"windows-amd64", "windows-386", "windows-arm":
+		"windows-amd64", "windows-386":
 		return true
 	}
 	return false
