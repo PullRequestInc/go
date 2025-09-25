@@ -1790,11 +1790,14 @@ const (
 	OpLOONG64VPCNT16
 	OpLOONG64ADDV
 	OpLOONG64ADDVconst
+	OpLOONG64ADDV16const
 	OpLOONG64SUBV
 	OpLOONG64SUBVconst
 	OpLOONG64MULV
 	OpLOONG64MULHV
 	OpLOONG64MULHVU
+	OpLOONG64MULH
+	OpLOONG64MULHU
 	OpLOONG64DIVV
 	OpLOONG64DIVVU
 	OpLOONG64REMV
@@ -1922,10 +1925,10 @@ const (
 	OpLOONG64CALLtail
 	OpLOONG64CALLclosure
 	OpLOONG64CALLinter
-	OpLOONG64DUFFZERO
-	OpLOONG64DUFFCOPY
 	OpLOONG64LoweredZero
+	OpLOONG64LoweredZeroLoop
 	OpLOONG64LoweredMove
+	OpLOONG64LoweredMoveLoop
 	OpLOONG64LoweredAtomicLoad8
 	OpLOONG64LoweredAtomicLoad32
 	OpLOONG64LoweredAtomicLoad64
@@ -24066,6 +24069,20 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
+		name:    "ADDV16const",
+		auxType: auxInt64,
+		argLen:  1,
+		asm:     loong64.AADDV16,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1073741820}, // SP R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 g R23 R24 R25 R26 R27 R28 R29 R31
+			},
+			outputs: []outputInfo{
+				{0, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
+			},
+		},
+	},
+	{
 		name:   "SUBV",
 		argLen: 2,
 		asm:    loong64.ASUBVU,
@@ -24128,6 +24145,36 @@ var opcodeTable = [...]opInfo{
 		argLen:      2,
 		commutative: true,
 		asm:         loong64.AMULHVU,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1073741816}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 g R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1073741817}, // ZERO R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 g R23 R24 R25 R26 R27 R28 R29 R31
+			},
+			outputs: []outputInfo{
+				{0, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
+			},
+		},
+	},
+	{
+		name:        "MULH",
+		argLen:      2,
+		commutative: true,
+		asm:         loong64.AMULH,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1073741816}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 g R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1073741817}, // ZERO R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 g R23 R24 R25 R26 R27 R28 R29 R31
+			},
+			outputs: []outputInfo{
+				{0, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
+			},
+		},
+	},
+	{
+		name:        "MULHU",
+		argLen:      2,
+		commutative: true,
+		asm:         loong64.AMULHU,
 		reg: regInfo{
 			inputs: []inputInfo{
 				{0, 1073741816}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 g R23 R24 R25 R26 R27 R28 R29 R31
@@ -25901,57 +25948,57 @@ var opcodeTable = [...]opInfo{
 		},
 	},
 	{
-		name:           "DUFFZERO",
+		name:           "LoweredZero",
 		auxType:        auxInt64,
 		argLen:         2,
 		faultOnNilArg0: true,
 		reg: regInfo{
 			inputs: []inputInfo{
-				{0, 524288}, // R20
+				{0, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
 			},
-			clobbers: 524290, // R1 R20
 		},
 	},
 	{
-		name:           "DUFFCOPY",
+		name:           "LoweredZeroLoop",
 		auxType:        auxInt64,
-		argLen:         3,
-		faultOnNilArg0: true,
-		faultOnNilArg1: true,
-		reg: regInfo{
-			inputs: []inputInfo{
-				{0, 1048576}, // R21
-				{1, 524288},  // R20
-			},
-			clobbers: 1572866, // R1 R20 R21
-		},
-	},
-	{
-		name:           "LoweredZero",
-		auxType:        auxInt64,
-		argLen:         3,
+		argLen:         2,
+		needIntTemp:    true,
 		faultOnNilArg0: true,
 		reg: regInfo{
 			inputs: []inputInfo{
-				{0, 524288},     // R20
-				{1, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
+				{0, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
 			},
-			clobbers: 524288, // R20
+			clobbersArg0: true,
 		},
 	},
 	{
 		name:           "LoweredMove",
 		auxType:        auxInt64,
-		argLen:         4,
+		argLen:         3,
 		faultOnNilArg0: true,
 		faultOnNilArg1: true,
 		reg: regInfo{
 			inputs: []inputInfo{
-				{0, 1048576},    // R21
-				{1, 524288},     // R20
-				{2, 1071644664}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R20 R21 R23 R24 R25 R26 R27 R28 R29 R31
+				{0, 1071120376}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R21 R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1071120376}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R21 R23 R24 R25 R26 R27 R28 R29 R31
 			},
-			clobbers: 1572864, // R20 R21
+			clobbers: 524288, // R20
+		},
+	},
+	{
+		name:           "LoweredMoveLoop",
+		auxType:        auxInt64,
+		argLen:         3,
+		faultOnNilArg0: true,
+		faultOnNilArg1: true,
+		reg: regInfo{
+			inputs: []inputInfo{
+				{0, 1070071800}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R23 R24 R25 R26 R27 R28 R29 R31
+				{1, 1070071800}, // R4 R5 R6 R7 R8 R9 R10 R11 R12 R13 R14 R15 R16 R17 R18 R19 R23 R24 R25 R26 R27 R28 R29 R31
+			},
+			clobbers:     1572864, // R20 R21
+			clobbersArg0: true,
+			clobbersArg1: true,
 		},
 	},
 	{
