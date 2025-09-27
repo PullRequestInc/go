@@ -508,7 +508,7 @@ func Fields(s []byte) [][]byte {
 // It splits the slice s at each run of code points c satisfying f(c) and
 // returns a slice of subslices of s. If all code points in s satisfy f(c), or
 // len(s) == 0, an empty slice is returned. Every element of the returned slice is
-// non-empty. Unlike [SplitFunc], leading and trailing runs of code points
+// non-empty. Unlike [Split], leading and trailing runs of code points
 // satisfying f(c) are discarded.
 //
 // FieldsFunc makes no guarantees about the order in which it calls f(c)
@@ -528,11 +528,7 @@ func FieldsFunc(s []byte, f func(rune) bool) [][]byte {
 	// more efficient, possibly due to cache effects.
 	start := -1 // valid span start if >= 0
 	for i := 0; i < len(s); {
-		size := 1
-		r := rune(s[i])
-		if r >= utf8.RuneSelf {
-			r, size = utf8.DecodeRune(s[i:])
-		}
+		r, size := utf8.DecodeRune(s[i:])
 		if f(r) {
 			if start >= 0 {
 				spans = append(spans, span{start, i})
@@ -614,11 +610,7 @@ func Map(mapping func(r rune) rune, s []byte) []byte {
 	// fine. It could also shrink but that falls out naturally.
 	b := make([]byte, 0, len(s))
 	for i := 0; i < len(s); {
-		wid := 1
-		r := rune(s[i])
-		if r >= utf8.RuneSelf {
-			r, wid = utf8.DecodeRune(s[i:])
-		}
+		r, wid := utf8.DecodeRune(s[i:])
 		r = mapping(r)
 		if r >= 0 {
 			b = utf8.AppendRune(b, r)
@@ -917,11 +909,7 @@ func LastIndexFunc(s []byte, f func(r rune) bool) int {
 func indexFunc(s []byte, f func(r rune) bool, truth bool) int {
 	start := 0
 	for start < len(s) {
-		wid := 1
-		r := rune(s[start])
-		if r >= utf8.RuneSelf {
-			r, wid = utf8.DecodeRune(s[start:])
-		}
+		r, wid := utf8.DecodeRune(s[start:])
 		if f(r) == truth {
 			return start
 		}
@@ -1052,10 +1040,7 @@ func trimLeftASCII(s []byte, as *asciiSet) []byte {
 
 func trimLeftUnicode(s []byte, cutset string) []byte {
 	for len(s) > 0 {
-		r, n := rune(s[0]), 1
-		if r >= utf8.RuneSelf {
-			r, n = utf8.DecodeRune(s)
-		}
+		r, n := utf8.DecodeRune(s)
 		if !containsRune(cutset, r) {
 			break
 		}
@@ -1251,19 +1236,10 @@ hasUnicode:
 	t = t[i:]
 	for len(s) != 0 && len(t) != 0 {
 		// Extract first rune from each.
-		var sr, tr rune
-		if s[0] < utf8.RuneSelf {
-			sr, s = rune(s[0]), s[1:]
-		} else {
-			r, size := utf8.DecodeRune(s)
-			sr, s = r, s[size:]
-		}
-		if t[0] < utf8.RuneSelf {
-			tr, t = rune(t[0]), t[1:]
-		} else {
-			r, size := utf8.DecodeRune(t)
-			tr, t = r, t[size:]
-		}
+		sr, size := utf8.DecodeRune(s)
+		s = s[size:]
+		tr, size := utf8.DecodeRune(t)
+		t = t[size:]
 
 		// If they match, keep going; if not, return false.
 
