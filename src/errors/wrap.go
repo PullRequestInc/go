@@ -80,6 +80,10 @@ func is(err, target error, targetComparable bool) bool {
 // As finds the first error in err's tree that matches target, and if one is found, sets
 // target to that error value and returns true. Otherwise, it returns false.
 //
+// For most uses, prefer [AsType]. As is equivalent to [AsType] but sets its target
+// argument rather than returning the matching error and doesn't require its target
+// argument to implement error.
+//
 // The tree consists of err itself, followed by the errors obtained by repeatedly
 // calling its Unwrap() error or Unwrap() []error method. When err wraps multiple
 // errors, As examines err followed by a depth-first traversal of its children.
@@ -145,3 +149,155 @@ func as(err error, target any, targetVal reflectlite.Value, targetType reflectli
 }
 
 var errorType = reflectlite.TypeOf((*error)(nil)).Elem()
+
+// AsType finds the first error in err's tree that matches the type E, and
+// if one is found, returns that error value and true. Otherwise, it
+// returns the zero value of E and false.
+//
+// The tree consists of err itself, followed by the errors obtained by
+// repeatedly calling its Unwrap() error or Unwrap() []error method. When
+// err wraps multiple errors, AsType examines err followed by a
+// depth-first traversal of its children.
+//
+// An error err matches the type E if the type assertion err.(E) holds,
+// or if the error has a method As(any) bool such that err.As(target)
+// returns true when target is a non-nil *E. In the latter case, the As
+// method is responsible for setting target.
+func AsType[E error](err error) (E, bool) {
+	if err == nil {
+		var zero E
+		return zero, false
+	}
+	var pe *E // lazily initialized
+	return asType(err, &pe)
+}
+
+func asType[E error](err error, ppe **E) (_ E, _ bool) {
+	for {
+		if e, ok := err.(E); ok {
+			return e, true
+		}
+		if x, ok := err.(interface{ As(any) bool }); ok {
+			if *ppe == nil {
+				*ppe = new(E)
+			}
+			if x.As(*ppe) {
+				return **ppe, true
+			}
+		}
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+			if err == nil {
+				return
+			}
+		case interface{ Unwrap() []error }:
+			for _, err := range x.Unwrap() {
+				if err == nil {
+					continue
+				}
+				if x, ok := asType(err, ppe); ok {
+					return x, true
+				}
+			}
+			return
+		default:
+			return
+		}
+	}
+}
+
+// IsAny reports whether any error in err's tree matches any of the target errors.
+//
+// The tree consists of err itself, followed by the errors obtained by repeatedly
+// calling its Unwrap() error or Unwrap() []error method. When err wraps multiple
+// errors, IsAny examines err followed by a depth-first traversal of its children.
+func IsAny(err error, targets ...error) bool {
+	_, found := match(err, targets)
+
+	return found
+}
+
+// Match returns the first target error from targets that matches any error in err's tree.
+//
+// The tree consists of err itself, followed by the errors obtained by repeatedly
+// calling its Unwrap() error or Unwrap() []error method. When err wraps multiple
+// errors, Match examines err followed by a depth-first traversal of its children.
+//
+// Match returns the first target from targets if an err is equal to that target or if
+// it implements a method Is(error) bool such that Is(target) returns true.
+// If no target matches the err, Match returns nil.
+func Match(err error, targets ...error) error {
+	matched, _ := match(err, targets)
+
+	return matched
+}
+
+func match(err error, targets []error) (error, bool) {
+	if err == nil {
+		for _, target := range targets {
+			if target == nil {
+				return nil, true
+			}
+		}
+		return nil, false
+	}
+
+	if len(targets) == 0 {
+		return nil, false
+	} else if len(targets) == 1 {
+		if Is(err, targets[0]) {
+			return targets[0], true
+		}
+
+		return nil, false
+	}
+
+	targetMap := make(map[error]struct{}, len(targets))
+	for _, target := range targets {
+		if target != nil && reflectlite.TypeOf(target).Comparable() {
+			targetMap[target] = struct{}{}
+		}
+	}
+
+	return matching(err, targets, targetMap)
+}
+
+func matching(err error, targets []error, targetMap map[error]struct{}) (error, bool) {
+	isErrComparable := reflectlite.TypeOf(err).Comparable()
+	for {
+		if isErrComparable && len(targetMap) > 0 {
+			if _, ok := targetMap[err]; ok {
+				return err, true
+			}
+		}
+
+		if x, ok := err.(interface{ Is(error) bool }); ok {
+			for _, target := range targets {
+				if target != nil && x.Is(target) {
+					return target, true
+				}
+			}
+		}
+
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			err = x.Unwrap()
+			if err == nil {
+				return nil, false
+			}
+			isErrComparable = reflectlite.TypeOf(err).Comparable()
+		case interface{ Unwrap() []error }:
+			for _, err := range x.Unwrap() {
+				if err != nil {
+					if matched, found := matching(err, targets, targetMap); matched != nil {
+						return matched, found
+					}
+				}
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
+	}
+}
