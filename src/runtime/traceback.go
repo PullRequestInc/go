@@ -429,7 +429,7 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
 			// gp._defer for a defer corresponding to this function, but that
 			// is hard to do with defer records on the stack during a stack copy.)
 			// Note: the +1 is to offset the -1 that
-			// stack.go:getStackMap does to back up a return
+			// (*stkframe).getStackMap does to back up a return
 			// address make sure the pc is in the CALL instruction.
 		} else {
 			frame.continpc = 0
@@ -620,7 +620,18 @@ func (u *unwinder) cgoCallers(pcBuf []uintptr) int {
 func tracebackPCs(u *unwinder, skip int, pcBuf []uintptr) int {
 	var cgoBuf [32]uintptr
 	n := 0
+	// maxTotalFrames limits the total number of frames we'll walk through,
+	// including wrapper frames. This prevents excessive CPU time when
+	// unwinding stacks with very deep context chains (issue #75583).
+	// The limit of 1024 is high enough for normal stacks while preventing
+	// multi-second delays from walking millions of wrapper frames.
+	const maxTotalFrames = 1024
+	totalFrames := 0
 	for ; n < len(pcBuf) && u.valid(); u.next() {
+		totalFrames++
+		if totalFrames >= maxTotalFrames {
+			break
+		}
 		f := u.frame.fn
 		cgoN := u.cgoCallers(cgoBuf[:])
 
@@ -1206,6 +1217,7 @@ var gStatusStrings = [...]string{
 	_Gwaiting:   "waiting",
 	_Gdead:      "dead",
 	_Gcopystack: "copystack",
+	_Gleaked:    "leaked",
 	_Gpreempted: "preempted",
 }
 
@@ -1226,7 +1238,7 @@ func goroutineheader(gp *g) {
 	}
 
 	// Override.
-	if gpstatus == _Gwaiting && gp.waitreason != waitReasonZero {
+	if (gpstatus == _Gwaiting || gpstatus == _Gleaked) && gp.waitreason != waitReasonZero {
 		status = gp.waitreason.String()
 	}
 
@@ -1245,6 +1257,9 @@ func goroutineheader(gp *g) {
 		}
 	}
 	print(" [", status)
+	if gpstatus == _Gleaked {
+		print(" (leaked)")
+	}
 	if isScan {
 		print(" (scan)")
 	}
