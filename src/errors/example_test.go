@@ -102,6 +102,18 @@ func ExampleAs() {
 	// Failed at path: non-existing
 }
 
+func ExampleAsType() {
+	if _, err := os.Open("non-existing"); err != nil {
+		if pathError, ok := errors.AsType[*fs.PathError](err); ok {
+			fmt.Println("Failed at path:", pathError.Path)
+		} else {
+			fmt.Println(err)
+		}
+	}
+	// Output:
+	// Failed at path: non-existing
+}
+
 func ExampleUnwrap() {
 	err1 := errors.New("error1")
 	err2 := fmt.Errorf("error2: [%w]", err1)
@@ -110,4 +122,37 @@ func ExampleUnwrap() {
 	// Output:
 	// error2: [error1]
 	// error1
+}
+
+func ExampleIsAny() {
+	if _, err := os.Open("non-existing"); err != nil {
+		if errors.IsAny(err, fs.ErrNotExist, fs.ErrInvalid) {
+			fmt.Println("file does not exist")
+		} else {
+			fmt.Println(err)
+		}
+	}
+	// Output:
+	// file does not exist
+}
+
+func ExampleMatch() {
+	_, err := os.Open("non-existing")
+
+	matched := errors.Match(err, fs.ErrNotExist, fs.ErrInvalid)
+	if matched != nil {
+		fmt.Println("matched error:", matched)
+	} else {
+		fmt.Println("no match")
+	}
+
+	switch matched {
+	case fs.ErrNotExist:
+		fmt.Println("file does not exist")
+	case fs.ErrInvalid:
+		fmt.Println("invalid argument")
+	}
+	// Output:
+	// matched error: file does not exist
+	// file does not exist
 }
