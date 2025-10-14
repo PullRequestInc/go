@@ -1120,7 +1120,7 @@ func expandFile(fname string) string {
 // are emitted to the directory table first, then the file table is
 // emitted after that.
 //
-// Note that there are some differences betwen DWARF versions 4 and 5
+// Note that there are some differences between DWARF versions 4 and 5
 // regarding how files and directories are handled; the chief item is
 // that in version 4 we have an implicit directory index 0 that holds
 // the compilation dir, and an implicit file index 0 that holds the
@@ -1544,9 +1544,14 @@ func (d *dwctxt) writeframes(fs loader.Sym) dwarfSecInfo {
 				if pcsp.Value > 0 {
 					// The return address is preserved at (CFA-frame_size)
 					// after a stack frame has been allocated.
+					off := -spdelta
+					if thearch.ReturnAddressAtTopOfFrame {
+						// Except arm64, which has it at the top of frame.
+						off = -int64(d.arch.PtrSize)
+					}
 					deltaBuf = append(deltaBuf, dwarf.DW_CFA_offset_extended_sf)
 					deltaBuf = dwarf.AppendUleb128(deltaBuf, uint64(thearch.Dwarfreglr))
-					deltaBuf = dwarf.AppendSleb128(deltaBuf, -spdelta/dataAlignmentFactor)
+					deltaBuf = dwarf.AppendSleb128(deltaBuf, off/dataAlignmentFactor)
 				} else {
 					// The return address is restored into the link register
 					// when a stack frame has been de-allocated.
