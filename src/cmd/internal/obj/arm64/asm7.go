@@ -3017,6 +3017,13 @@ func buildop(ctxt *obj.Link) {
 			oprangeset(ANOOP, t)
 			oprangeset(ADRPS, t)
 
+			oprangeset(APACIASP, t)
+			oprangeset(AAUTIASP, t)
+			oprangeset(APACIBSP, t)
+			oprangeset(AAUTIBSP, t)
+			oprangeset(AAUTIA1716, t)
+			oprangeset(AAUTIB1716, t)
+
 		case ACBZ:
 			oprangeset(ACBZW, t)
 			oprangeset(ACBNZ, t)
@@ -4354,7 +4361,7 @@ func (c *ctxt7) asmout(p *obj.Prog, out []uint32) (count int) {
 		// remove the NOTUSETMP flag in optab.
 		op := c.opirr(p, p.As)
 		if op&Sbit != 0 {
-			c.ctxt.Diag("can not break addition/subtraction when S bit is set", p)
+			c.ctxt.Diag("can not break addition/subtraction when S bit is set (%v)", p)
 		}
 		rt, r := p.To.Reg, p.Reg
 		if r == obj.REG_NONE {
@@ -7016,6 +7023,24 @@ func (c *ctxt7) op0(p *obj.Prog, a obj.As) uint32 {
 
 	case ASEVL:
 		return SYSHINT(5)
+
+	case APACIASP:
+		return SYSHINT(25)
+
+	case AAUTIASP:
+		return SYSHINT(29)
+
+	case APACIBSP:
+		return SYSHINT(27)
+
+	case AAUTIBSP:
+		return SYSHINT(31)
+
+	case AAUTIA1716:
+		return SYSHINT(12)
+
+	case AAUTIB1716:
+		return SYSHINT(14)
 	}
 
 	c.ctxt.Diag("%v: bad op0 %v", p, a)
