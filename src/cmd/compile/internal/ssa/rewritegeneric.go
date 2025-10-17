@@ -422,6 +422,8 @@ func rewriteValuegeneric(v *Value) bool {
 		return rewriteValuegeneric_OpSliceCap(v)
 	case OpSliceLen:
 		return rewriteValuegeneric_OpSliceLen(v)
+	case OpSliceMake:
+		return rewriteValuegeneric_OpSliceMake(v)
 	case OpSlicePtr:
 		return rewriteValuegeneric_OpSlicePtr(v)
 	case OpSlicemask:
@@ -21393,6 +21395,21 @@ func rewriteValuegeneric_OpNilCheck(v *Value) bool {
 		v.copyOf(ptr)
 		return true
 	}
+	// match: (NilCheck ptr:(Arg {sym}) _)
+	// cond: isDictArgSym(sym)
+	// result: ptr
+	for {
+		ptr := v_0
+		if ptr.Op != OpArg {
+			break
+		}
+		sym := auxToSym(ptr.Aux)
+		if !(isDictArgSym(sym)) {
+			break
+		}
+		v.copyOf(ptr)
+		return true
+	}
 	// match: (NilCheck ptr:(NilCheck _ _) _ )
 	// result: ptr
 	for {
@@ -23940,6 +23957,7 @@ func rewriteValuegeneric_OpOrB(v *Value) bool {
 	v_1 := v.Args[1]
 	v_0 := v.Args[0]
 	b := v.Block
+	typ := &b.Func.Config.Types
 	// match: (OrB (Less64 (Const64 [c]) x) (Less64 x (Const64 [d])))
 	// cond: c >= d
 	// result: (Less64U (Const64 <x.Type> [c-d]) (Sub64 <x.Type> x (Const64 <x.Type> [d])))
@@ -25248,6 +25266,558 @@ func rewriteValuegeneric_OpOrB(v *Value) bool {
 			v2.AuxInt = int8ToAuxInt(d + 1)
 			v1.AddArg2(x, v2)
 			v.AddArg2(v0, v1)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Less64F x y:(Const64F [c])))
+	// result: (Not (Leq64F y x))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			if x != v_1.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst64F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq64F, typ.Bool)
+			v0.AddArg2(y, x)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Leq64F x y:(Const64F [c])))
+	// result: (Not (Less64F y x))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			if x != v_1.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst64F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess64F, typ.Bool)
+			v0.AddArg2(y, x)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Less64F y:(Const64F [c]) x))
+	// result: (Not (Leq64F x y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst64F {
+				continue
+			}
+			if x != v_1.Args[1] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq64F, typ.Bool)
+			v0.AddArg2(x, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Leq64F y:(Const64F [c]) x))
+	// result: (Not (Less64F x y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst64F {
+				continue
+			}
+			if x != v_1.Args[1] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess64F, typ.Bool)
+			v0.AddArg2(x, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Less32F x y:(Const32F [c])))
+	// result: (Not (Leq32F y x))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			if x != v_1.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst32F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq32F, typ.Bool)
+			v0.AddArg2(y, x)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Leq32F x y:(Const32F [c])))
+	// result: (Not (Less32F y x))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			if x != v_1.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst32F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess32F, typ.Bool)
+			v0.AddArg2(y, x)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Less32F y:(Const32F [c]) x))
+	// result: (Not (Leq32F x y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst32F {
+				continue
+			}
+			if x != v_1.Args[1] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq32F, typ.Bool)
+			v0.AddArg2(x, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Leq32F y:(Const32F [c]) x))
+	// result: (Not (Less32F x y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst32F {
+				continue
+			}
+			if x != v_1.Args[1] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess32F, typ.Bool)
+			v0.AddArg2(x, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Less64F abs:(Abs x) y:(Const64F [c])))
+	// result: (Not (Leq64F y abs))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			abs := v_1.Args[0]
+			if abs.Op != OpAbs || x != abs.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst64F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq64F, typ.Bool)
+			v0.AddArg2(y, abs)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Leq64F abs:(Abs x) y:(Const64F [c])))
+	// result: (Not (Less64F y abs))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			abs := v_1.Args[0]
+			if abs.Op != OpAbs || x != abs.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst64F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess64F, typ.Bool)
+			v0.AddArg2(y, abs)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Less64F y:(Const64F [c]) abs:(Abs x)))
+	// result: (Not (Leq64F abs y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst64F {
+				continue
+			}
+			abs := v_1.Args[1]
+			if abs.Op != OpAbs || x != abs.Args[0] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq64F, typ.Bool)
+			v0.AddArg2(abs, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Leq64F y:(Const64F [c]) abs:(Abs x)))
+	// result: (Not (Less64F abs y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst64F {
+				continue
+			}
+			abs := v_1.Args[1]
+			if abs.Op != OpAbs || x != abs.Args[0] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess64F, typ.Bool)
+			v0.AddArg2(abs, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Less64F neg:(Neg64F x) y:(Const64F [c])))
+	// result: (Not (Leq64F y neg))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			neg := v_1.Args[0]
+			if neg.Op != OpNeg64F || x != neg.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst64F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq64F, typ.Bool)
+			v0.AddArg2(y, neg)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Leq64F neg:(Neg64F x) y:(Const64F [c])))
+	// result: (Not (Less64F y neg))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			neg := v_1.Args[0]
+			if neg.Op != OpNeg64F || x != neg.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst64F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess64F, typ.Bool)
+			v0.AddArg2(y, neg)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Less64F y:(Const64F [c]) neg:(Neg64F x)))
+	// result: (Not (Leq64F neg y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst64F {
+				continue
+			}
+			neg := v_1.Args[1]
+			if neg.Op != OpNeg64F || x != neg.Args[0] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq64F, typ.Bool)
+			v0.AddArg2(neg, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq64F x x) (Leq64F y:(Const64F [c]) neg:(Neg64F x)))
+	// result: (Not (Less64F neg y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq64F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq64F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst64F {
+				continue
+			}
+			neg := v_1.Args[1]
+			if neg.Op != OpNeg64F || x != neg.Args[0] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess64F, typ.Bool)
+			v0.AddArg2(neg, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Less32F neg:(Neg32F x) y:(Const32F [c])))
+	// result: (Not (Leq32F y neg))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			neg := v_1.Args[0]
+			if neg.Op != OpNeg32F || x != neg.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst32F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq32F, typ.Bool)
+			v0.AddArg2(y, neg)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Leq32F neg:(Neg32F x) y:(Const32F [c])))
+	// result: (Not (Less32F y neg))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			neg := v_1.Args[0]
+			if neg.Op != OpNeg32F || x != neg.Args[0] {
+				continue
+			}
+			y := v_1.Args[1]
+			if y.Op != OpConst32F {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess32F, typ.Bool)
+			v0.AddArg2(y, neg)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Less32F y:(Const32F [c]) neg:(Neg32F x)))
+	// result: (Not (Leq32F neg y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLess32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst32F {
+				continue
+			}
+			neg := v_1.Args[1]
+			if neg.Op != OpNeg32F || x != neg.Args[0] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLeq32F, typ.Bool)
+			v0.AddArg2(neg, y)
+			v.AddArg(v0)
+			return true
+		}
+		break
+	}
+	// match: (OrB (Neq32F x x) (Leq32F y:(Const32F [c]) neg:(Neg32F x)))
+	// result: (Not (Less32F neg y))
+	for {
+		for _i0 := 0; _i0 <= 1; _i0, v_0, v_1 = _i0+1, v_1, v_0 {
+			if v_0.Op != OpNeq32F {
+				continue
+			}
+			x := v_0.Args[1]
+			if x != v_0.Args[0] || v_1.Op != OpLeq32F {
+				continue
+			}
+			_ = v_1.Args[1]
+			y := v_1.Args[0]
+			if y.Op != OpConst32F {
+				continue
+			}
+			neg := v_1.Args[1]
+			if neg.Op != OpNeg32F || x != neg.Args[0] {
+				continue
+			}
+			v.reset(OpNot)
+			v0 := b.NewValue0(v.Pos, OpLess32F, typ.Bool)
+			v0.AddArg2(neg, y)
+			v.AddArg(v0)
 			return true
 		}
 		break
@@ -30496,6 +31066,91 @@ func rewriteValuegeneric_OpSliceLen(v *Value) bool {
 		}
 		v.copyOf(newLen)
 		return true
+	}
+	return false
+}
+func rewriteValuegeneric_OpSliceMake(v *Value) bool {
+	v_2 := v.Args[2]
+	v_1 := v.Args[1]
+	v_0 := v.Args[0]
+	b := v.Block
+	// match: (SliceMake (AddPtr <t> x (And64 y (Slicemask _))) w:(Const64 [c]) z)
+	// cond: c > 0
+	// result: (SliceMake (AddPtr <t> x y) w z)
+	for {
+		if v_0.Op != OpAddPtr {
+			break
+		}
+		t := v_0.Type
+		_ = v_0.Args[1]
+		x := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpAnd64 {
+			break
+		}
+		_ = v_0_1.Args[1]
+		v_0_1_0 := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		for _i0 := 0; _i0 <= 1; _i0, v_0_1_0, v_0_1_1 = _i0+1, v_0_1_1, v_0_1_0 {
+			y := v_0_1_0
+			if v_0_1_1.Op != OpSlicemask {
+				continue
+			}
+			w := v_1
+			if w.Op != OpConst64 {
+				continue
+			}
+			c := auxIntToInt64(w.AuxInt)
+			z := v_2
+			if !(c > 0) {
+				continue
+			}
+			v.reset(OpSliceMake)
+			v0 := b.NewValue0(v.Pos, OpAddPtr, t)
+			v0.AddArg2(x, y)
+			v.AddArg3(v0, w, z)
+			return true
+		}
+		break
+	}
+	// match: (SliceMake (AddPtr <t> x (And32 y (Slicemask _))) w:(Const32 [c]) z)
+	// cond: c > 0
+	// result: (SliceMake (AddPtr <t> x y) w z)
+	for {
+		if v_0.Op != OpAddPtr {
+			break
+		}
+		t := v_0.Type
+		_ = v_0.Args[1]
+		x := v_0.Args[0]
+		v_0_1 := v_0.Args[1]
+		if v_0_1.Op != OpAnd32 {
+			break
+		}
+		_ = v_0_1.Args[1]
+		v_0_1_0 := v_0_1.Args[0]
+		v_0_1_1 := v_0_1.Args[1]
+		for _i0 := 0; _i0 <= 1; _i0, v_0_1_0, v_0_1_1 = _i0+1, v_0_1_1, v_0_1_0 {
+			y := v_0_1_0
+			if v_0_1_1.Op != OpSlicemask {
+				continue
+			}
+			w := v_1
+			if w.Op != OpConst32 {
+				continue
+			}
+			c := auxIntToInt32(w.AuxInt)
+			z := v_2
+			if !(c > 0) {
+				continue
+			}
+			v.reset(OpSliceMake)
+			v0 := b.NewValue0(v.Pos, OpAddPtr, t)
+			v0.AddArg2(x, y)
+			v.AddArg3(v0, w, z)
+			return true
+		}
+		break
 	}
 	return false
 }
