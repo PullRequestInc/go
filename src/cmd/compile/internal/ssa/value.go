@@ -10,7 +10,7 @@ import (
 	"cmd/internal/src"
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -182,7 +182,7 @@ func (v *Value) LongString() string {
 		}
 	}
 	if len(names) != 0 {
-		sort.Strings(names) // Otherwise a source of variation in debugging output.
+		slices.Sort(names) // Otherwise a source of variation in debugging output.
 		s += " (" + strings.Join(names, ", ") + ")"
 	}
 	return s
@@ -600,7 +600,7 @@ func (v *Value) removeable() bool {
 func AutoVar(v *Value) (*ir.Name, int64) {
 	if loc, ok := v.Block.Func.RegAlloc[v.ID].(LocalSlot); ok {
 		if v.Type.Size() > loc.Type.Size() {
-			v.Fatalf("spill/restore type %s doesn't fit in slot type %s", v.Type, loc.Type)
+			v.Fatalf("v%d: spill/restore type %v doesn't fit in slot type %v", v.ID, v.Type, loc.Type)
 		}
 		return loc.N, loc.Off
 	}

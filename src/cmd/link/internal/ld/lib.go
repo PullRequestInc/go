@@ -45,7 +45,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1452,7 +1451,7 @@ func (ctxt *Link) hostlink() {
 			argv = append(argv, "-s")
 		}
 	} else if *FlagW {
-		if !ctxt.IsAIX() { // The AIX linker's -S has different meaning
+		if !ctxt.IsAIX() && !ctxt.IsSolaris() { // The AIX and Solaris linkers' -S has different meaning
 			argv = append(argv, "-Wl,-S") // suppress debugging symbols
 		}
 	}
@@ -1772,7 +1771,8 @@ func (ctxt *Link) hostlink() {
 	}
 
 	// Force global symbols to be exported for dlopen, etc.
-	if ctxt.IsELF {
+	switch {
+	case ctxt.IsELF:
 		if ctxt.DynlinkingGo() || ctxt.BuildMode == BuildModeCShared || !linkerFlagSupported(ctxt.Arch, argv[0], altLinker, "-Wl,--export-dynamic-symbol=main") {
 			argv = append(argv, "-rdynamic")
 		} else {
@@ -1780,13 +1780,19 @@ func (ctxt *Link) hostlink() {
 			ctxt.loader.ForAllCgoExportDynamic(func(s loader.Sym) {
 				exports = append(exports, "-Wl,--export-dynamic-symbol="+ctxt.loader.SymExtname(s))
 			})
-			sort.Strings(exports)
+			slices.Sort(exports)
 			argv = append(argv, exports...)
 		}
-	}
-	if ctxt.HeadType == objabi.Haix {
+	case ctxt.IsAIX():
 		fileName := xcoffCreateExportFile(ctxt)
 		argv = append(argv, "-Wl,-bE:"+fileName)
+	case ctxt.IsWindows() && !slices.Contains(flagExtldflags, wlPrefix+"export-all-symbols"):
+		fileName := peCreateExportFile(ctxt, filepath.Base(outopt))
+		prefix := ""
+		if isMSVC {
+			prefix = "-Wl,-def:"
+		}
+		argv = append(argv, prefix+fileName)
 	}
 
 	const unusedArguments = "-Qunused-arguments"
