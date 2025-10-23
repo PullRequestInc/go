@@ -6,9 +6,11 @@ package ssa
 
 import (
 	"cmd/compile/internal/base"
+	"cmd/compile/internal/ir"
 	"cmd/compile/internal/logopt"
 	"cmd/compile/internal/reflectdata"
 	"cmd/compile/internal/rttype"
+	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/s390x"
@@ -452,6 +454,26 @@ func canMergeLoad(target, load *Value) bool {
 func isSameCall(aux Aux, name string) bool {
 	fn := aux.(*AuxCall).Fn
 	return fn != nil && fn.String() == name
+}
+
+func isMalloc(aux Aux) bool {
+	return isNewObject(aux) || isSpecializedMalloc(aux)
+}
+
+func isNewObject(aux Aux) bool {
+	fn := aux.(*AuxCall).Fn
+	return fn != nil && fn.String() == "runtime.newobject"
+}
+
+func isSpecializedMalloc(aux Aux) bool {
+	fn := aux.(*AuxCall).Fn
+	if fn == nil {
+		return false
+	}
+	name := fn.String()
+	return strings.HasPrefix(name, "runtime.mallocgcSmallNoScanSC") ||
+		strings.HasPrefix(name, "runtime.mallocgcSmallScanNoHeaderSC") ||
+		strings.HasPrefix(name, "runtime.mallocTiny")
 }
 
 // canLoadUnaligned reports if the architecture supports unaligned load operations.
@@ -2057,12 +2079,12 @@ func isFixedLoad(v *Value, sym Sym, off int64) bool {
 		return false
 	}
 
-	if strings.HasPrefix(lsym.Name, "type:") {
+	if ti := lsym.TypeInfo(); ti != nil {
 		// Type symbols do not contain information about their fields, unlike the cases above.
 		// Hand-implement field accesses.
 		// TODO: can this be replaced with reflectdata.writeType and just use the code above?
 
-		t := (*lsym.Extra).(*obj.TypeInfo).Type.(*types.Type)
+		t := ti.Type.(*types.Type)
 
 		for _, f := range rttype.Type.Fields() {
 			if f.Offset == off && copyCompatibleType(v.Type, f.Type) {
@@ -2116,12 +2138,12 @@ func rewriteFixedLoad(v *Value, sym Sym, sb *Value, off int64) *Value {
 		base.Fatalf("fixedLoad data not known for %s:%d", sym, off)
 	}
 
-	if strings.HasPrefix(lsym.Name, "type:") {
+	if ti := lsym.TypeInfo(); ti != nil {
 		// Type symbols do not contain information about their fields, unlike the cases above.
 		// Hand-implement field accesses.
 		// TODO: can this be replaced with reflectdata.writeType and just use the code above?
 
-		t := (*lsym.Extra).(*obj.TypeInfo).Type.(*types.Type)
+		t := ti.Type.(*types.Type)
 
 		ptrSizedOpConst := OpConst64
 		if f.Config.PtrSize == 4 {
@@ -2611,10 +2633,7 @@ func isDirectType1(v *Value) bool {
 		return isDirectType2(v.Args[0])
 	case OpAddr:
 		lsym := v.Aux.(*obj.LSym)
-		if lsym.Extra == nil {
-			return false
-		}
-		if ti, ok := (*lsym.Extra).(*obj.TypeInfo); ok {
+		if ti := lsym.TypeInfo(); ti != nil {
 			return types.IsDirectIface(ti.Type.(*types.Type))
 		}
 	}
@@ -2647,10 +2666,7 @@ func isDirectIface1(v *Value, depth int) bool {
 		return isDirectIface2(v.Args[0], depth-1)
 	case OpAddr:
 		lsym := v.Aux.(*obj.LSym)
-		if lsym.Extra == nil {
-			return false
-		}
-		if ii, ok := (*lsym.Extra).(*obj.ItabInfo); ok {
+		if ii := lsym.ItabInfo(); ii != nil {
 			return types.IsDirectIface(ii.Type.(*types.Type))
 		}
 	case OpConstNil:
@@ -2743,4 +2759,8 @@ func panicBoundsCToAux(p PanicBoundsC) Aux {
 }
 func panicBoundsCCToAux(p PanicBoundsCC) Aux {
 	return p
+}
+
+func isDictArgSym(sym Sym) bool {
+	return sym.(*ir.Name).Sym().Name == typecheck.LocalDictName
 }
