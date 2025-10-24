@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -80,7 +81,7 @@ func init() {
 func runTool(ctx context.Context, cmd *base.Command, args []string) {
 	if len(args) == 0 {
 		counter.Inc("go/subcommand:tool")
-		listTools(ctx)
+		listTools(modload.LoaderState, ctx)
 		return
 	}
 	toolName := args[0]
@@ -108,14 +109,14 @@ func runTool(ctx context.Context, cmd *base.Command, args []string) {
 		if tool := loadBuiltinTool(toolName); tool != "" {
 			// Increment a counter for the tool subcommand with the tool name.
 			counter.Inc("go/subcommand:tool-" + toolName)
-			buildAndRunBuiltinTool(ctx, toolName, tool, args[1:])
+			buildAndRunBuiltinTool(modload.LoaderState, ctx, toolName, tool, args[1:])
 			return
 		}
 
 		// Try to build and run mod tool.
-		tool := loadModTool(ctx, toolName)
+		tool := loadModTool(modload.LoaderState, ctx, toolName)
 		if tool != "" {
-			buildAndRunModtool(ctx, toolName, tool, args[1:])
+			buildAndRunModtool(modload.LoaderState, ctx, toolName, tool, args[1:])
 			return
 		}
 
@@ -132,7 +133,7 @@ func runTool(ctx context.Context, cmd *base.Command, args []string) {
 }
 
 // listTools prints a list of the available tools in the tools directory.
-func listTools(ctx context.Context) {
+func listTools(loaderstate *modload.State, ctx context.Context) {
 	f, err := os.Open(build.ToolDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "go: no tool directory: %s\n", err)
@@ -147,6 +148,8 @@ func listTools(ctx context.Context) {
 		return
 	}
 
+	toolSet := make(map[string]bool)
+
 	sort.Strings(names)
 	for _, name := range names {
 		// Unify presentation by going to lower case.
@@ -158,12 +161,39 @@ func listTools(ctx context.Context) {
 		if cfg.BuildToolchainName == "gccgo" && !isGccgoTool(name) {
 			continue
 		}
+		toolSet[name] = true
 		fmt.Println(name)
 	}
 
-	modload.InitWorkfile()
-	modload.LoadModFile(ctx)
-	modTools := slices.Sorted(maps.Keys(modload.MainModules.Tools()))
+	// Also list builtin tools that can be built on demand.
+	// These are packages in cmd/ that would be installed to the tool directory.
+	cmdDir := filepath.Join(cfg.GOROOT, "src", "cmd")
+	entries, err := os.ReadDir(cmdDir)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			toolName := entry.Name()
+			// Skip packages that are not tools.
+			if toolName == "internal" || toolName == "vendor" {
+				continue
+			}
+			// Check if this tool is already in the tool directory.
+			if toolSet[toolName] {
+				continue
+			}
+			// Check if it's a valid builtin tool.
+			if tool := loadBuiltinTool(toolName); tool != "" {
+				toolSet[toolName] = true
+				fmt.Println(toolName)
+			}
+		}
+	}
+
+	modload.InitWorkfile(loaderstate)
+	modload.LoadModFile(loaderstate, ctx)
+	modTools := slices.Sorted(maps.Keys(loaderstate.MainModules.Tools()))
 	for _, tool := range modTools {
 		fmt.Println(tool)
 	}
@@ -251,12 +281,12 @@ func loadBuiltinTool(toolName string) string {
 	return cmdTool
 }
 
-func loadModTool(ctx context.Context, name string) string {
-	modload.InitWorkfile()
-	modload.LoadModFile(ctx)
+func loadModTool(loaderstate *modload.State, ctx context.Context, name string) string {
+	modload.InitWorkfile(loaderstate)
+	modload.LoadModFile(loaderstate, ctx)
 
 	matches := []string{}
-	for tool := range modload.MainModules.Tools() {
+	for tool := range loaderstate.MainModules.Tools() {
 		if tool == name || defaultExecName(tool) == name {
 			matches = append(matches, tool)
 		}
@@ -300,7 +330,7 @@ func builtTool(runAction *work.Action) string {
 	return linkAction.BuiltTarget()
 }
 
-func buildAndRunBuiltinTool(ctx context.Context, toolName, tool string, args []string) {
+func buildAndRunBuiltinTool(loaderstate *modload.State, ctx context.Context, toolName, tool string, args []string) {
 	// Override GOOS and GOARCH for the build to build the tool using
 	// the same GOOS and GOARCH as this go command.
 	cfg.ForceHost()
@@ -308,17 +338,17 @@ func buildAndRunBuiltinTool(ctx context.Context, toolName, tool string, args []s
 	// Ignore go.mod and go.work: we don't need them, and we want to be able
 	// to run the tool even if there's an issue with the module or workspace the
 	// user happens to be in.
-	modload.RootMode = modload.NoRoot
+	loaderstate.RootMode = modload.NoRoot
 
 	runFunc := func(b *work.Builder, ctx context.Context, a *work.Action) error {
 		cmdline := str.StringList(builtTool(a), a.Args)
 		return runBuiltTool(toolName, nil, cmdline)
 	}
 
-	buildAndRunTool(ctx, tool, args, runFunc)
+	buildAndRunTool(loaderstate, ctx, tool, args, runFunc)
 }
 
-func buildAndRunModtool(ctx context.Context, toolName, tool string, args []string) {
+func buildAndRunModtool(loaderstate *modload.State, ctx context.Context, toolName, tool string, args []string) {
 	runFunc := func(b *work.Builder, ctx context.Context, a *work.Action) error {
 		// Use the ExecCmd to run the binary, as go run does. ExecCmd allows users
 		// to provide a runner to run the binary, for example a simulator for binaries
@@ -332,11 +362,11 @@ func buildAndRunModtool(ctx context.Context, toolName, tool string, args []strin
 		return runBuiltTool(toolName, env, cmdline)
 	}
 
-	buildAndRunTool(ctx, tool, args, runFunc)
+	buildAndRunTool(loaderstate, ctx, tool, args, runFunc)
 }
 
-func buildAndRunTool(ctx context.Context, tool string, args []string, runTool work.ActorFunc) {
-	work.BuildInit()
+func buildAndRunTool(loaderstate *modload.State, ctx context.Context, tool string, args []string, runTool work.ActorFunc) {
+	work.BuildInit(loaderstate)
 	b := work.NewBuilder("")
 	defer func() {
 		if err := b.Close(); err != nil {
@@ -345,11 +375,11 @@ func buildAndRunTool(ctx context.Context, tool string, args []string, runTool wo
 	}()
 
 	pkgOpts := load.PackageOpts{MainOnly: true}
-	p := load.PackagesAndErrors(ctx, pkgOpts, []string{tool})[0]
+	p := load.PackagesAndErrors(loaderstate, ctx, pkgOpts, []string{tool})[0]
 	p.Internal.OmitDebug = true
 	p.Internal.ExeName = p.DefaultExecName()
 
-	a1 := b.LinkAction(work.ModeBuild, work.ModeBuild, p)
+	a1 := b.LinkAction(loaderstate, work.ModeBuild, work.ModeBuild, p)
 	a1.CacheExecutable = true
 	a := &work.Action{Mode: "go tool", Actor: runTool, Args: args, Deps: []*work.Action{a1}}
 	b.Do(ctx, a)
