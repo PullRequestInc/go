@@ -517,7 +517,7 @@ func acquireSudog() *sudog {
 	s := pp.sudogcache[n-1]
 	pp.sudogcache[n-1] = nil
 	pp.sudogcache = pp.sudogcache[:n-1]
-	if s.elem != nil {
+	if s.elem.get() != nil {
 		throw("acquireSudog: found s.elem != nil in cache")
 	}
 	releasem(mp)
@@ -526,7 +526,7 @@ func acquireSudog() *sudog {
 
 //go:nosplit
 func releaseSudog(s *sudog) {
-	if s.elem != nil {
+	if s.elem.get() != nil {
 		throw("runtime: sudog with non-nil elem")
 	}
 	if s.isSelect {
@@ -541,7 +541,7 @@ func releaseSudog(s *sudog) {
 	if s.waitlink != nil {
 		throw("runtime: sudog with non-nil waitlink")
 	}
-	if s.c != nil {
+	if s.c.get() != nil {
 		throw("runtime: sudog with non-nil c")
 	}
 	gp := getg()
@@ -789,7 +789,9 @@ func cpuinit(env string) {
 // getGodebugEarly extracts the environment variable GODEBUG from the environment on
 // Unix-like operating systems and returns it. This function exists to extract GODEBUG
 // early before much of the runtime is initialized.
-func getGodebugEarly() string {
+//
+// Returns nil, false if OS doesn't provide env vars early in the init sequence.
+func getGodebugEarly() (string, bool) {
 	const prefix = "GODEBUG="
 	var env string
 	switch GOOS {
@@ -807,12 +809,16 @@ func getGodebugEarly() string {
 			s := unsafe.String(p, findnull(p))
 
 			if stringslite.HasPrefix(s, prefix) {
-				env = gostring(p)[len(prefix):]
+				env = gostringnocopy(p)[len(prefix):]
 				break
 			}
 		}
+		break
+
+	default:
+		return "", false
 	}
-	return env
+	return env, true
 }
 
 // The bootstrap sequence is:
@@ -859,12 +865,15 @@ func schedinit() {
 	// The world starts stopped.
 	worldStopped()
 
+	godebug, parsedGodebug := getGodebugEarly()
+	if parsedGodebug {
+		parseRuntimeDebugVars(godebug)
+	}
 	ticks.init() // run as early as possible
 	moduledataverify()
 	stackinit()
 	randinit() // must run before mallocinit, alginit, mcommoninit
 	mallocinit()
-	godebug := getGodebugEarly()
 	cpuinit(godebug) // must run before alginit
 	alginit()        // maps, hash, rand must not be used before this call
 	mcommoninit(gp.m, -1)
@@ -880,7 +889,12 @@ func schedinit() {
 	goenvs()
 	secure()
 	checkfds()
-	parsedebugvars()
+	if !parsedGodebug {
+		// Some platforms, e.g., Windows, didn't make env vars available "early",
+		// so try again now.
+		parseRuntimeDebugVars(gogetenv("GODEBUG"))
+	}
+	finishDebugVarsSetup()
 	gcinit()
 
 	// Allocate stack space that can be used when crashing due to bad stack
@@ -1208,7 +1222,9 @@ func casfrom_Gscanstatus(gp *g, oldval, newval uint32) {
 		_Gscanwaiting,
 		_Gscanrunning,
 		_Gscansyscall,
-		_Gscanpreempted:
+		_Gscanleaked,
+		_Gscanpreempted,
+		_Gscandeadextra:
 		if newval == oldval&^_Gscan {
 			success = gp.atomicstatus.CompareAndSwap(oldval, newval)
 		}
@@ -1228,7 +1244,9 @@ func castogscanstatus(gp *g, oldval, newval uint32) bool {
 	case _Grunnable,
 		_Grunning,
 		_Gwaiting,
-		_Gsyscall:
+		_Gleaked,
+		_Gsyscall,
+		_Gdeadextra:
 		if newval == oldval|_Gscan {
 			r := gp.atomicstatus.CompareAndSwap(oldval, newval)
 			if r {
@@ -2443,7 +2461,7 @@ func needm(signal bool) {
 	}
 
 	// mp.curg is now a real goroutine.
-	casgstatus(mp.curg, _Gdead, _Gsyscall)
+	casgstatus(mp.curg, _Gdeadextra, _Gsyscall)
 	sched.ngsys.Add(-1)
 	sched.nGsyscallNoP.Add(1)
 
@@ -2499,11 +2517,10 @@ func oneNewExtraM() {
 	gp.syscallpc = gp.sched.pc
 	gp.syscallsp = gp.sched.sp
 	gp.stktopsp = gp.sched.sp
-	// malg returns status as _Gidle. Change to _Gdead before
-	// adding to allg where GC can see it. We use _Gdead to hide
-	// this from tracebacks and stack scans since it isn't a
-	// "real" goroutine until needm grabs it.
-	casgstatus(gp, _Gidle, _Gdead)
+	// malg returns status as _Gidle. Change to _Gdeadextra before
+	// adding to allg where GC can see it. _Gdeadextra hides this
+	// from traceback and stack scans.
+	casgstatus(gp, _Gidle, _Gdeadextra)
 	gp.m = mp
 	mp.curg = gp
 	mp.isextra = true
@@ -2577,8 +2594,8 @@ func dropm() {
 		trace = traceAcquire()
 	}
 
-	// Return mp.curg to dead state.
-	casgstatus(mp.curg, _Gsyscall, _Gdead)
+	// Return mp.curg to _Gdeadextra state.
+	casgstatus(mp.curg, _Gsyscall, _Gdeadextra)
 	mp.curg.preemptStop = false
 	sched.ngsys.Add(1)
 	sched.nGsyscallNoP.Add(-1)
@@ -5551,6 +5568,14 @@ func gcount(includeSys bool) int32 {
 	return n
 }
 
+// goroutineleakcount returns the number of leaked goroutines last reported by
+// the runtime.
+//
+//go:linkname goroutineleakcount runtime/pprof.runtime_goroutineleakcount
+func goroutineleakcount() int {
+	return work.goroutineLeak.count
+}
+
 func mcount() int32 {
 	return int32(sched.mnext - sched.nmfreed)
 }
@@ -5794,11 +5819,15 @@ func (pp *p) destroy() {
 	// Move all timers to the local P.
 	getg().m.p.ptr().timers.take(&pp.timers)
 
-	// Flush p's write barrier buffer.
-	if gcphase != _GCoff {
-		wbBufFlush1(pp)
-		pp.gcw.dispose()
+	// No need to flush p's write barrier buffer or span queue, as Ps
+	// cannot be destroyed during the mark phase.
+	if phase := gcphase; phase != _GCoff {
+		println("runtime: p id", pp.id, "destroyed during GC phase", phase)
+		throw("P destroyed while GC is running")
 	}
+	// We should free the queues though.
+	pp.gcw.spanq.destroy()
+
 	clear(pp.sudogbuf[:])
 	pp.sudogcache = pp.sudogbuf[:0]
 	pp.pinnerCache = nil
