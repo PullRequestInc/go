@@ -905,7 +905,7 @@ func stacksplit(ctxt *obj.Link, p *obj.Prog, cursym *obj.LSym, newprog obj.ProgA
 		to_done = p
 	} else {
 		// large stack: SP-framesize < stackguard-StackSmall
-		offset := int64(framesize) - abi.StackSmall
+		offset := framesize - abi.StackSmall
 		if framesize > abi.StackBig {
 			// Such a large stack we need to protect against underflow.
 			// The runtime guarantees SP > objabi.StackBig, but
@@ -2991,7 +2991,7 @@ func (ins *instruction) length() int {
 func (ins *instruction) validate(ctxt *obj.Link) {
 	enc, err := encodingForAs(ins.as)
 	if err != nil {
-		ctxt.Diag(err.Error())
+		ctxt.Diag("%v", err)
 		return
 	}
 	enc.validate(ctxt, ins)
@@ -3026,7 +3026,7 @@ func instructionsForOpImmediate(p *obj.Prog, as obj.As, rs int16) []*instruction
 
 	low, high, err := Split32BitImmediate(ins.imm)
 	if err != nil {
-		p.Ctxt.Diag("%v: constant %d too large", p, ins.imm, err)
+		p.Ctxt.Diag("%v: constant %d too large: %v", p, ins.imm, err)
 		return nil
 	}
 	if high == 0 {
@@ -3837,7 +3837,7 @@ func instructionsForProg(p *obj.Prog) []*instruction {
 		if err != nil {
 			p.Ctxt.Diag("%v: %v", p, err)
 		}
-		ins.imm = int64(vtype)
+		ins.imm = vtype
 		if ins.as == AVSETIVLI {
 			if p.From.Type != obj.TYPE_CONST {
 				p.Ctxt.Diag("%v: expected immediate value", p)

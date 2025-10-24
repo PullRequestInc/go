@@ -429,7 +429,7 @@ func (u *unwinder) resolveInternal(innermost, isSyscall bool) {
 			// gp._defer for a defer corresponding to this function, but that
 			// is hard to do with defer records on the stack during a stack copy.)
 			// Note: the +1 is to offset the -1 that
-			// stack.go:getStackMap does to back up a return
+			// (*stkframe).getStackMap does to back up a return
 			// address make sure the pc is in the CALL instruction.
 		} else {
 			frame.continpc = 0
@@ -1206,7 +1206,9 @@ var gStatusStrings = [...]string{
 	_Gwaiting:   "waiting",
 	_Gdead:      "dead",
 	_Gcopystack: "copystack",
+	_Gleaked:    "leaked",
 	_Gpreempted: "preempted",
+	_Gdeadextra: "waiting for cgo callback",
 }
 
 func goroutineheader(gp *g) {
@@ -1226,7 +1228,7 @@ func goroutineheader(gp *g) {
 	}
 
 	// Override.
-	if gpstatus == _Gwaiting && gp.waitreason != waitReasonZero {
+	if (gpstatus == _Gwaiting || gpstatus == _Gleaked) && gp.waitreason != waitReasonZero {
 		status = gp.waitreason.String()
 	}
 
@@ -1245,6 +1247,9 @@ func goroutineheader(gp *g) {
 		}
 	}
 	print(" [", status)
+	if gpstatus == _Gleaked {
+		print(" (leaked)")
+	}
 	if isScan {
 		print(" (scan)")
 	}
@@ -1291,7 +1296,16 @@ func tracebacksomeothers(me *g, showf func(*g) bool) {
 	// against concurrent creation of new Gs, but even with allglock we may
 	// miss Gs created after this loop.
 	forEachGRace(func(gp *g) {
-		if gp == me || gp == curgp || readgstatus(gp) == _Gdead || !showf(gp) || (isSystemGoroutine(gp, false) && level < 2) {
+		if gp == me || gp == curgp {
+			return
+		}
+		if status := readgstatus(gp); status == _Gdead || status == _Gdeadextra {
+			return
+		}
+		if !showf(gp) {
+			return
+		}
+		if isSystemGoroutine(gp, false) && level < 2 {
 			return
 		}
 		print("\n")
