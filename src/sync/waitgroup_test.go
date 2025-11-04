@@ -5,6 +5,9 @@
 package sync_test
 
 import (
+	"internal/testenv"
+	"os/exec"
+	"path/filepath"
 	. "sync"
 	"sync/atomic"
 	"testing"
@@ -108,6 +111,22 @@ func TestWaitGroupGo(t *testing.T) {
 	if i != 1 {
 		t.Fatalf("got %d, want 1", i)
 	}
+}
+
+func TestIssue76126(t *testing.T) {
+	testenv.MustHaveGoRun(t)
+
+	cmd := exec.Command(testenv.GoToolPath(t), "test", "-race")
+	cmd.Dir = filepath.Join("testdata", "issue76126")
+	b, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go test -race failed: %v\n%s", err, b)
+	}
+	if code := cmd.ProcessState.ExitCode(); code == 0 {
+		t.Fatalf("expected non-zero exit code, got %d", code)
+	}
+
+	// Should fail with panic.
 }
 
 func BenchmarkWaitGroupUncontended(b *testing.B) {
