@@ -382,7 +382,6 @@ func dumpgoroutine(gp *g) {
 		dumpint(uint64(uintptr(unsafe.Pointer(d))))
 		dumpint(uint64(uintptr(unsafe.Pointer(gp))))
 		dumpint(uint64(d.sp))
-		dumpint(uint64(d.pc))
 		fn := *(**funcval)(unsafe.Pointer(&d.fn))
 		dumpint(uint64(uintptr(unsafe.Pointer(fn))))
 		if d.fn == nil {
@@ -412,10 +411,18 @@ func dumpgs() {
 	forEachG(func(gp *g) {
 		status := readgstatus(gp) // The world is stopped so gp will not be in a scan state.
 		switch status {
+		case _Grunning:
+			// Dump goroutine if it's _Grunning only during a syscall. This is safe
+			// because the goroutine will just park without mutating its stack, since
+			// the world is stopped.
+			if gp.syscallsp != 0 {
+				dumpgoroutine(gp)
+			}
+			fallthrough
 		default:
 			print("runtime: unexpected G.status ", hex(status), "\n")
 			throw("dumpgs in STW - bad status")
-		case _Gdead:
+		case _Gdead, _Gdeadextra:
 			// ok
 		case _Grunnable,
 			_Gsyscall,

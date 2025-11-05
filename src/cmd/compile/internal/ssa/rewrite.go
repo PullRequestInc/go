@@ -6,8 +6,11 @@ package ssa
 
 import (
 	"cmd/compile/internal/base"
+	"cmd/compile/internal/ir"
 	"cmd/compile/internal/logopt"
 	"cmd/compile/internal/reflectdata"
+	"cmd/compile/internal/rttype"
+	"cmd/compile/internal/typecheck"
 	"cmd/compile/internal/types"
 	"cmd/internal/obj"
 	"cmd/internal/obj/s390x"
@@ -31,6 +34,7 @@ const (
 	removeDeadValues                 = true
 
 	repZeroThreshold = 1408 // size beyond which we use REP STOS for zeroing
+	repMoveThreshold = 1408 // size beyond which we use REP MOVS for copying
 )
 
 // deadcode indicates whether rewrite should try to remove any values that become dead.
@@ -53,11 +57,15 @@ func applyRewrite(f *Func, rb blockRewriter, rv valueRewriter, deadcode deadValu
 	var iters int
 	var states map[string]bool
 	for {
+		if debug > 1 {
+			fmt.Printf("%s: iter %d\n", f.pass.name, iters)
+		}
 		change := false
 		deadChange := false
 		for _, b := range f.Blocks {
 			var b0 *Block
 			if debug > 1 {
+				fmt.Printf("%s: start block\n", f.pass.name)
 				b0 = new(Block)
 				*b0 = *b
 				b0.Succs = append([]Edge{}, b.Succs...) // make a new copy, not aliasing
@@ -75,6 +83,9 @@ func applyRewrite(f *Func, rb blockRewriter, rv valueRewriter, deadcode deadValu
 				}
 			}
 			for j, v := range b.Values {
+				if debug > 1 {
+					fmt.Printf("%s: consider %v\n", f.pass.name, v.LongString())
+				}
 				var v0 *Value
 				if debug > 1 {
 					v0 = new(Value)
@@ -452,6 +463,26 @@ func isSameCall(aux Aux, name string) bool {
 	return fn != nil && fn.String() == name
 }
 
+func isMalloc(aux Aux) bool {
+	return isNewObject(aux) || isSpecializedMalloc(aux)
+}
+
+func isNewObject(aux Aux) bool {
+	fn := aux.(*AuxCall).Fn
+	return fn != nil && fn.String() == "runtime.newobject"
+}
+
+func isSpecializedMalloc(aux Aux) bool {
+	fn := aux.(*AuxCall).Fn
+	if fn == nil {
+		return false
+	}
+	name := fn.String()
+	return strings.HasPrefix(name, "runtime.mallocgcSmallNoScanSC") ||
+		strings.HasPrefix(name, "runtime.mallocgcSmallScanNoHeaderSC") ||
+		strings.HasPrefix(name, "runtime.mallocTiny")
+}
+
 // canLoadUnaligned reports if the architecture supports unaligned load operations.
 func canLoadUnaligned(c *Config) bool {
 	return c.ctxt.Arch.Alignment == 1
@@ -469,11 +500,10 @@ func ntz32(x int32) int { return bits.TrailingZeros32(uint32(x)) }
 func ntz16(x int16) int { return bits.TrailingZeros16(uint16(x)) }
 func ntz8(x int8) int   { return bits.TrailingZeros8(uint8(x)) }
 
-func oneBit(x int64) bool   { return x&(x-1) == 0 && x != 0 }
-func oneBit8(x int8) bool   { return x&(x-1) == 0 && x != 0 }
-func oneBit16(x int16) bool { return x&(x-1) == 0 && x != 0 }
-func oneBit32(x int32) bool { return x&(x-1) == 0 && x != 0 }
-func oneBit64(x int64) bool { return x&(x-1) == 0 && x != 0 }
+// oneBit reports whether x contains exactly one set bit.
+func oneBit[T int8 | int16 | int32 | int64](x T) bool {
+	return x&(x-1) == 0 && x != 0
+}
 
 // nto returns the number of trailing ones.
 func nto(x int64) int64 {
@@ -502,18 +532,6 @@ func isPowerOfTwo[T int8 | int16 | int32 | int64](n T) bool {
 // isUnsignedPowerOfTwo reports whether n is an unsigned power of 2.
 func isUnsignedPowerOfTwo[T uint8 | uint16 | uint32 | uint64](n T) bool {
 	return n != 0 && n&(n-1) == 0
-}
-
-// isUint64PowerOfTwo reports whether uint64(n) is a power of 2.
-func isUint64PowerOfTwo(in int64) bool {
-	n := uint64(in)
-	return n > 0 && n&(n-1) == 0
-}
-
-// isUint32PowerOfTwo reports whether uint32(n) is a power of 2.
-func isUint32PowerOfTwo(in int64) bool {
-	n := uint64(uint32(in))
-	return n > 0 && n&(n-1) == 0
 }
 
 // is32Bit reports whether n can be represented as a signed 32 bit integer.
@@ -637,49 +655,14 @@ func truncate64Fto32F(f float64) float32 {
 	return math.Float32frombits(r)
 }
 
-// extend32Fto64F converts a float32 value to a float64 value preserving the bit
-// pattern of the mantissa.
-func extend32Fto64F(f float32) float64 {
-	if !math.IsNaN(float64(f)) {
-		return float64(f)
-	}
-	// NaN bit patterns aren't necessarily preserved across conversion
-	// instructions so we need to do the conversion manually.
-	b := uint64(math.Float32bits(f))
-	//   | sign                  | exponent      | mantissa                    |
-	r := ((b << 32) & (1 << 63)) | (0x7ff << 52) | ((b & 0x7fffff) << (52 - 23))
-	return math.Float64frombits(r)
-}
-
 // DivisionNeedsFixUp reports whether the division needs fix-up code.
 func DivisionNeedsFixUp(v *Value) bool {
 	return v.AuxInt == 0
 }
 
-// auxFrom64F encodes a float64 value so it can be stored in an AuxInt.
-func auxFrom64F(f float64) int64 {
-	if f != f {
-		panic("can't encode a NaN in AuxInt field")
-	}
-	return int64(math.Float64bits(f))
-}
-
-// auxFrom32F encodes a float32 value so it can be stored in an AuxInt.
-func auxFrom32F(f float32) int64 {
-	if f != f {
-		panic("can't encode a NaN in AuxInt field")
-	}
-	return int64(math.Float64bits(extend32Fto64F(f)))
-}
-
 // auxTo32F decodes a float32 from the AuxInt value provided.
 func auxTo32F(i int64) float32 {
 	return truncate64Fto32F(math.Float64frombits(uint64(i)))
-}
-
-// auxTo64F decodes a float64 from the AuxInt value provided.
-func auxTo64F(i int64) float64 {
-	return math.Float64frombits(uint64(i))
 }
 
 func auxIntToBool(i int64) bool {
@@ -715,11 +698,16 @@ func auxIntToValAndOff(i int64) ValAndOff {
 func auxIntToArm64BitField(i int64) arm64BitField {
 	return arm64BitField(i)
 }
-func auxIntToInt128(x int64) int128 {
-	if x != 0 {
-		panic("nonzero int128 not allowed")
-	}
-	return 0
+func auxIntToArm64ConditionalParams(i int64) arm64ConditionalParams {
+	var params arm64ConditionalParams
+	params.cond = Op(i & 0xffff)
+	i >>= 16
+	params.nzcv = uint8(i & 0x0f)
+	i >>= 4
+	params.constValue = uint8(i & 0x1f)
+	i >>= 5
+	params.ind = i == 1
+	return params
 }
 func auxIntToFlagConstant(x int64) flagConstant {
 	return flagConstant(x)
@@ -745,7 +733,7 @@ func int32ToAuxInt(i int32) int64 {
 	return int64(i)
 }
 func int64ToAuxInt(i int64) int64 {
-	return int64(i)
+	return i
 }
 func uint8ToAuxInt(i uint8) int64 {
 	return int64(int8(i))
@@ -762,12 +750,21 @@ func valAndOffToAuxInt(v ValAndOff) int64 {
 func arm64BitFieldToAuxInt(v arm64BitField) int64 {
 	return int64(v)
 }
-func int128ToAuxInt(x int128) int64 {
-	if x != 0 {
-		panic("nonzero int128 not allowed")
+func arm64ConditionalParamsToAuxInt(v arm64ConditionalParams) int64 {
+	if v.cond&^0xffff != 0 {
+		panic("condition value exceeds 16 bits")
 	}
-	return 0
+
+	var i int64
+	if v.ind {
+		i = 1 << 25
+	}
+	i |= int64(v.constValue) << 20
+	i |= int64(v.nzcv) << 16
+	i |= int64(v.cond)
+	return i
 }
+
 func flagConstantToAuxInt(x flagConstant) int64 {
 	return int64(x)
 }
@@ -836,23 +833,6 @@ func s390xRotateParamsToAux(r s390x.RotateParams) Aux {
 // uaddOvf reports whether unsigned a+b would overflow.
 func uaddOvf(a, b int64) bool {
 	return uint64(a)+uint64(b) < uint64(a)
-}
-
-// loadLSymOffset simulates reading a word at an offset into a
-// read-only symbol's runtime memory. If it would read a pointer to
-// another symbol, that symbol is returned. Otherwise, it returns nil.
-func loadLSymOffset(lsym *obj.LSym, offset int64) *obj.LSym {
-	if lsym.Type != objabi.SRODATA {
-		return nil
-	}
-
-	for _, r := range lsym.R {
-		if int64(r.Off) == offset && r.Type&^objabi.R_WEAK == objabi.R_ADDR && r.Add == 0 {
-			return r.Sym
-		}
-	}
-
-	return nil
 }
 
 func devirtLECall(v *Value, sym *obj.LSym) *Value {
@@ -1283,10 +1263,8 @@ func logRule(s string) {
 		}
 		ruleFile = w
 	}
-	_, err := fmt.Fprintln(ruleFile, s)
-	if err != nil {
-		panic(err)
-	}
+	// Ignore errors in case of multiple processes fighting over the file.
+	fmt.Fprintln(ruleFile, s)
 }
 
 var ruleFile io.Writer
@@ -1576,10 +1554,6 @@ func GetPPC64Shiftmb(auxint int64) int64 {
 	return int64(int8(auxint >> 8))
 }
 
-func GetPPC64Shiftme(auxint int64) int64 {
-	return int64(int8(auxint))
-}
-
 // Test if this value can encoded as a mask for a rlwinm like
 // operation.  Masks can also extend from the msb and wrap to
 // the lsb too.  That is, the valid masks are 32 bit strings
@@ -1635,7 +1609,7 @@ func encodePPC64RotateMask(rotate, mask, nbits int64) int64 {
 		mb, me = men, mbn
 	}
 
-	return int64(me) | int64(mb<<8) | int64(rotate<<16) | int64(nbits<<24)
+	return int64(me) | int64(mb<<8) | rotate<<16 | nbits<<24
 }
 
 // Merge (RLDICL [encoded] (SRDconst [s] x)) into (RLDICL [new_encoded] x)
@@ -1744,7 +1718,7 @@ func mergePPC64AndSldi(m, s int64) int64 {
 func mergePPC64ClrlsldiSrw(sld, srw int64) int64 {
 	mask_1 := uint64(0xFFFFFFFF >> uint(srw))
 	// for CLRLSLDI, it's more convenient to think of it as a mask left bits then rotate left.
-	mask_2 := uint64(0xFFFFFFFFFFFFFFFF) >> uint(GetPPC64Shiftmb(int64(sld)))
+	mask_2 := uint64(0xFFFFFFFFFFFFFFFF) >> uint(GetPPC64Shiftmb(sld))
 
 	// Rewrite mask to apply after the final left shift.
 	mask_3 := (mask_1 & mask_2) << uint(GetPPC64Shiftsh(sld))
@@ -1756,7 +1730,7 @@ func mergePPC64ClrlsldiSrw(sld, srw int64) int64 {
 	if uint64(uint32(mask_3)) != mask_3 || mask_3 == 0 {
 		return 0
 	}
-	return encodePPC64RotateMask(int64(r_3), int64(mask_3), 32)
+	return encodePPC64RotateMask(r_3, int64(mask_3), 32)
 }
 
 // Test if a doubleword shift right feeding into a CLRLSLDI can be merged into RLWINM.
@@ -1764,7 +1738,7 @@ func mergePPC64ClrlsldiSrw(sld, srw int64) int64 {
 func mergePPC64ClrlsldiSrd(sld, srd int64) int64 {
 	mask_1 := uint64(0xFFFFFFFFFFFFFFFF) >> uint(srd)
 	// for CLRLSLDI, it's more convenient to think of it as a mask left bits then rotate left.
-	mask_2 := uint64(0xFFFFFFFFFFFFFFFF) >> uint(GetPPC64Shiftmb(int64(sld)))
+	mask_2 := uint64(0xFFFFFFFFFFFFFFFF) >> uint(GetPPC64Shiftmb(sld))
 
 	// Rewrite mask to apply after the final left shift.
 	mask_3 := (mask_1 & mask_2) << uint(GetPPC64Shiftsh(sld))
@@ -1781,7 +1755,7 @@ func mergePPC64ClrlsldiSrd(sld, srd int64) int64 {
 	if v1&mask_3 != 0 {
 		return 0
 	}
-	return encodePPC64RotateMask(int64(r_3&31), int64(mask_3), 32)
+	return encodePPC64RotateMask(r_3&31, int64(mask_3), 32)
 }
 
 // Test if a RLWINM feeding into a CLRLSLDI can be merged into RLWINM.  Return
@@ -1978,6 +1952,43 @@ func arm64BFWidth(mask, rshift int64) int64 {
 	return nto(shiftedMask)
 }
 
+// encodes condition code and NZCV flags into auxint.
+func arm64ConditionalParamsAuxInt(cond Op, nzcv uint8) arm64ConditionalParams {
+	if cond < OpARM64Equal || cond > OpARM64GreaterEqualU {
+		panic("Wrong conditional operation")
+	}
+	if nzcv&0x0f != nzcv {
+		panic("Wrong value of NZCV flag")
+	}
+	return arm64ConditionalParams{cond, nzcv, 0, false}
+}
+
+// encodes condition code, NZCV flags and constant value into auxint.
+func arm64ConditionalParamsAuxIntWithValue(cond Op, nzcv uint8, value uint8) arm64ConditionalParams {
+	if value&0x1f != value {
+		panic("Wrong value of constant")
+	}
+	params := arm64ConditionalParamsAuxInt(cond, nzcv)
+	params.constValue = value
+	params.ind = true
+	return params
+}
+
+// extracts condition code from auxint.
+func (condParams arm64ConditionalParams) Cond() Op {
+	return condParams.cond
+}
+
+// extracts NZCV flags from auxint.
+func (condParams arm64ConditionalParams) Nzcv() int64 {
+	return int64(condParams.nzcv)
+}
+
+// extracts constant value from auxint if present.
+func (condParams arm64ConditionalParams) ConstValue() (int64, bool) {
+	return int64(condParams.constValue), condParams.ind
+}
+
 // registerizable reports whether t is a primitive type that fits in
 // a register. It assumes float64 values will always fit into registers
 // even if that isn't strictly true.
@@ -2061,74 +2072,134 @@ func symIsROZero(sym Sym) bool {
 	return true
 }
 
-// isFixed32 returns true if the int32 at offset off in symbol sym
-// is known and constant.
-func isFixed32(c *Config, sym Sym, off int64) bool {
-	return isFixed(c, sym, off, 4)
-}
-
-// isFixed returns true if the range [off,off+size] of the symbol sym
-// is known and constant.
-func isFixed(c *Config, sym Sym, off, size int64) bool {
+// isFixedLoad returns true if the load can be resolved to fixed address or constant,
+// and can be rewritten by rewriteFixedLoad.
+func isFixedLoad(v *Value, sym Sym, off int64) bool {
 	lsym := sym.(*obj.LSym)
-	if lsym.Extra == nil {
+	if (v.Type.IsPtrShaped() || v.Type.IsUintptr()) && lsym.Type == objabi.SRODATA {
+		for _, r := range lsym.R {
+			if (r.Type == objabi.R_ADDR || r.Type == objabi.R_WEAKADDR) && int64(r.Off) == off && r.Add == 0 {
+				return true
+			}
+		}
 		return false
 	}
-	if _, ok := (*lsym.Extra).(*obj.TypeInfo); ok {
-		if off == 2*c.PtrSize && size == 4 {
-			return true // type hash field
-		}
-	}
-	return false
-}
-func fixed32(c *Config, sym Sym, off int64) int32 {
-	lsym := sym.(*obj.LSym)
-	if ti, ok := (*lsym.Extra).(*obj.TypeInfo); ok {
-		if off == 2*c.PtrSize {
-			return int32(types.TypeHash(ti.Type.(*types.Type)))
-		}
-	}
-	base.Fatalf("fixed32 data not known for %s:%d", sym, off)
-	return 0
-}
 
-// isFixedSym returns true if the contents of sym at the given offset
-// is known and is the constant address of another symbol.
-func isFixedSym(sym Sym, off int64) bool {
-	lsym := sym.(*obj.LSym)
-	switch {
-	case lsym.Type == objabi.SRODATA:
-		// itabs, dictionaries
-	default:
-		return false
-	}
-	for _, r := range lsym.R {
-		if (r.Type == objabi.R_ADDR || r.Type == objabi.R_WEAKADDR) && int64(r.Off) == off && r.Add == 0 {
+	if ti := lsym.TypeInfo(); ti != nil {
+		// Type symbols do not contain information about their fields, unlike the cases above.
+		// Hand-implement field accesses.
+		// TODO: can this be replaced with reflectdata.writeType and just use the code above?
+
+		t := ti.Type.(*types.Type)
+
+		for _, f := range rttype.Type.Fields() {
+			if f.Offset == off && copyCompatibleType(v.Type, f.Type) {
+				switch f.Sym.Name {
+				case "Size_", "PtrBytes", "Hash", "Kind_", "GCData":
+					return true
+				default:
+					// fmt.Println("unknown field", f.Sym.Name)
+					return false
+				}
+			}
+		}
+
+		if t.IsPtr() && off == rttype.PtrType.OffsetOf("Elem") {
 			return true
 		}
+
+		return false
 	}
+
 	return false
 }
-func fixedSym(f *Func, sym Sym, off int64) Sym {
+
+// rewriteFixedLoad rewrites a load to a fixed address or constant, if isFixedLoad returns true.
+func rewriteFixedLoad(v *Value, sym Sym, sb *Value, off int64) *Value {
+	b := v.Block
+	f := b.Func
+
 	lsym := sym.(*obj.LSym)
-	for _, r := range lsym.R {
-		if (r.Type == objabi.R_ADDR || r.Type == objabi.R_WEAKADDR) && int64(r.Off) == off {
-			if strings.HasPrefix(r.Sym.Name, "type:") {
-				// In case we're loading a type out of a dictionary, we need to record
-				// that the containing function might put that type in an interface.
-				// That information is currently recorded in relocations in the dictionary,
-				// but if we perform this load at compile time then the dictionary
-				// might be dead.
-				reflectdata.MarkTypeSymUsedInInterface(r.Sym, f.fe.Func().Linksym())
-			} else if strings.HasPrefix(r.Sym.Name, "go:itab") {
-				// Same, but if we're using an itab we need to record that the
-				// itab._type might be put in an interface.
-				reflectdata.MarkTypeSymUsedInInterface(r.Sym, f.fe.Func().Linksym())
+	if (v.Type.IsPtrShaped() || v.Type.IsUintptr()) && lsym.Type == objabi.SRODATA {
+		for _, r := range lsym.R {
+			if (r.Type == objabi.R_ADDR || r.Type == objabi.R_WEAKADDR) && int64(r.Off) == off && r.Add == 0 {
+				if strings.HasPrefix(r.Sym.Name, "type:") {
+					// In case we're loading a type out of a dictionary, we need to record
+					// that the containing function might put that type in an interface.
+					// That information is currently recorded in relocations in the dictionary,
+					// but if we perform this load at compile time then the dictionary
+					// might be dead.
+					reflectdata.MarkTypeSymUsedInInterface(r.Sym, f.fe.Func().Linksym())
+				} else if strings.HasPrefix(r.Sym.Name, "go:itab") {
+					// Same, but if we're using an itab we need to record that the
+					// itab._type might be put in an interface.
+					reflectdata.MarkTypeSymUsedInInterface(r.Sym, f.fe.Func().Linksym())
+				}
+				v.reset(OpAddr)
+				v.Aux = symToAux(r.Sym)
+				v.AddArg(sb)
+				return v
 			}
-			return r.Sym
 		}
+		base.Fatalf("fixedLoad data not known for %s:%d", sym, off)
 	}
-	base.Fatalf("fixedSym data not known for %s:%d", sym, off)
+
+	if ti := lsym.TypeInfo(); ti != nil {
+		// Type symbols do not contain information about their fields, unlike the cases above.
+		// Hand-implement field accesses.
+		// TODO: can this be replaced with reflectdata.writeType and just use the code above?
+
+		t := ti.Type.(*types.Type)
+
+		ptrSizedOpConst := OpConst64
+		if f.Config.PtrSize == 4 {
+			ptrSizedOpConst = OpConst32
+		}
+
+		for _, f := range rttype.Type.Fields() {
+			if f.Offset == off && copyCompatibleType(v.Type, f.Type) {
+				switch f.Sym.Name {
+				case "Size_":
+					v.reset(ptrSizedOpConst)
+					v.AuxInt = t.Size()
+					return v
+				case "PtrBytes":
+					v.reset(ptrSizedOpConst)
+					v.AuxInt = types.PtrDataSize(t)
+					return v
+				case "Hash":
+					v.reset(OpConst32)
+					v.AuxInt = int64(types.TypeHash(t))
+					return v
+				case "Kind_":
+					v.reset(OpConst8)
+					v.AuxInt = int64(reflectdata.ABIKindOfType(t))
+					return v
+				case "GCData":
+					gcdata, _ := reflectdata.GCSym(t, true)
+					v.reset(OpAddr)
+					v.Aux = symToAux(gcdata)
+					v.AddArg(sb)
+					return v
+				default:
+					base.Fatalf("unknown field %s for fixedLoad of %s at offset %d", f.Sym.Name, lsym.Name, off)
+				}
+			}
+		}
+
+		if t.IsPtr() && off == rttype.PtrType.OffsetOf("Elem") {
+			elemSym := reflectdata.TypeLinksym(t.Elem())
+			reflectdata.MarkTypeSymUsedInInterface(elemSym, f.fe.Func().Linksym())
+			v.reset(OpAddr)
+			v.Aux = symToAux(elemSym)
+			v.AddArg(sb)
+			return v
+		}
+
+		base.Fatalf("fixedLoad data not known for %s:%d", sym, off)
+	}
+
+	base.Fatalf("fixedLoad data not known for %s:%d", sym, off)
 	return nil
 }
 
@@ -2554,61 +2625,57 @@ func rewriteStructStore(v *Value) *Value {
 	return mem
 }
 
-// isDirectType reports whether v represents a type
+// isDirectAndComparableType reports whether v represents a type
 // (a *runtime._type) whose value is stored directly in an
-// interface (i.e., is pointer or pointer-like).
-func isDirectType(v *Value) bool {
-	return isDirectType1(v)
+// interface (i.e., is pointer or pointer-like) and is comparable.
+func isDirectAndComparableType(v *Value) bool {
+	return isDirectAndComparableType1(v)
 }
 
 // v is a type
-func isDirectType1(v *Value) bool {
+func isDirectAndComparableType1(v *Value) bool {
 	switch v.Op {
 	case OpITab:
-		return isDirectType2(v.Args[0])
+		return isDirectAndComparableType2(v.Args[0])
 	case OpAddr:
 		lsym := v.Aux.(*obj.LSym)
-		if lsym.Extra == nil {
-			return false
-		}
-		if ti, ok := (*lsym.Extra).(*obj.TypeInfo); ok {
-			return types.IsDirectIface(ti.Type.(*types.Type))
+		if ti := lsym.TypeInfo(); ti != nil {
+			t := ti.Type.(*types.Type)
+			return types.IsDirectIface(t) && types.IsComparable(t)
 		}
 	}
 	return false
 }
 
 // v is an empty interface
-func isDirectType2(v *Value) bool {
+func isDirectAndComparableType2(v *Value) bool {
 	switch v.Op {
 	case OpIMake:
-		return isDirectType1(v.Args[0])
+		return isDirectAndComparableType1(v.Args[0])
 	}
 	return false
 }
 
-// isDirectIface reports whether v represents an itab
+// isDirectAndComparableIface reports whether v represents an itab
 // (a *runtime._itab) for a type whose value is stored directly
-// in an interface (i.e., is pointer or pointer-like).
-func isDirectIface(v *Value) bool {
-	return isDirectIface1(v, 9)
+// in an interface (i.e., is pointer or pointer-like) and is comparable.
+func isDirectAndComparableIface(v *Value) bool {
+	return isDirectAndComparableIface1(v, 9)
 }
 
 // v is an itab
-func isDirectIface1(v *Value, depth int) bool {
+func isDirectAndComparableIface1(v *Value, depth int) bool {
 	if depth == 0 {
 		return false
 	}
 	switch v.Op {
 	case OpITab:
-		return isDirectIface2(v.Args[0], depth-1)
+		return isDirectAndComparableIface2(v.Args[0], depth-1)
 	case OpAddr:
 		lsym := v.Aux.(*obj.LSym)
-		if lsym.Extra == nil {
-			return false
-		}
-		if ii, ok := (*lsym.Extra).(*obj.ItabInfo); ok {
-			return types.IsDirectIface(ii.Type.(*types.Type))
+		if ii := lsym.ItabInfo(); ii != nil {
+			t := ii.Type.(*types.Type)
+			return types.IsDirectIface(t) && types.IsComparable(t)
 		}
 	case OpConstNil:
 		// We can treat this as direct, because if the itab is
@@ -2619,16 +2686,16 @@ func isDirectIface1(v *Value, depth int) bool {
 }
 
 // v is an interface
-func isDirectIface2(v *Value, depth int) bool {
+func isDirectAndComparableIface2(v *Value, depth int) bool {
 	if depth == 0 {
 		return false
 	}
 	switch v.Op {
 	case OpIMake:
-		return isDirectIface1(v.Args[0], depth-1)
+		return isDirectAndComparableIface1(v.Args[0], depth-1)
 	case OpPhi:
 		for _, a := range v.Args {
-			if !isDirectIface2(a, depth-1) {
+			if !isDirectAndComparableIface2(a, depth-1) {
 				return false
 			}
 		}
@@ -2700,4 +2767,8 @@ func panicBoundsCToAux(p PanicBoundsC) Aux {
 }
 func panicBoundsCCToAux(p PanicBoundsCC) Aux {
 	return p
+}
+
+func isDictArgSym(sym Sym) bool {
+	return sym.(*ir.Name).Sym().Name == typecheck.LocalDictName
 }

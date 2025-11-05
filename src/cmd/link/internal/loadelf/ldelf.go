@@ -785,12 +785,12 @@ func Load(l *loader.Loader, arch *sys.Arch, localSymVersion int, f *bio.Reader, 
 				rSym = 0
 			} else {
 				var elfsym ElfSym
-				if err := readelfsym(l, arch, elfobj, int(symIdx), &elfsym, 0, 0); err != nil {
+				if err := readelfsym(l, arch, elfobj, symIdx, &elfsym, 0, 0); err != nil {
 					return errorf("malformed elf file: %v", err)
 				}
 				elfsym.sym = symbols[symIdx]
 				if elfsym.sym == 0 {
-					return errorf("malformed elf file: %s#%d: reloc of invalid sym #%d %s shndx=%d type=%d", l.SymName(sect.sym), j, int(symIdx), elfsym.name, elfsym.shndx, elfsym.type_)
+					return errorf("malformed elf file: %s#%d: reloc of invalid sym #%d %s shndx=%d type=%d", l.SymName(sect.sym), j, symIdx, elfsym.name, elfsym.shndx, elfsym.type_)
 				}
 
 				rSym = elfsym.sym
@@ -854,7 +854,7 @@ func elfmap(elfobj *ElfObj, sect *ElfSect) (err error) {
 	}
 
 	elfobj.f.MustSeek(int64(uint64(elfobj.base)+sect.off), 0)
-	sect.base, sect.readOnlyMem, err = elfobj.f.Slice(uint64(sect.size))
+	sect.base, sect.readOnlyMem, err = elfobj.f.Slice(sect.size)
 	if err != nil {
 		return fmt.Errorf("short read: %v", err)
 	}
@@ -1178,6 +1178,7 @@ func relSize(arch *sys.Arch, pn string, elftype uint32) (uint8, uint8, error) {
 		RISCV64 | uint32(elf.R_RISCV_SET32)<<16,
 		RISCV64 | uint32(elf.R_RISCV_SUB32)<<16,
 		RISCV64 | uint32(elf.R_RISCV_32_PCREL)<<16,
+		RISCV64 | uint32(elf.R_RISCV_JAL)<<16,
 		RISCV64 | uint32(elf.R_RISCV_RELAX)<<16:
 		return 4, 4, nil
 

@@ -794,9 +794,6 @@ TEXT setg<>(SB),NOSPLIT|NOFRAME,$0-0
 	MOVW	R0, g
 
 	// Save g to thread-local storage.
-#ifdef GOOS_windows
-	B	runtime·save_g(SB)
-#else
 #ifdef GOOS_openbsd
 	B	runtime·save_g(SB)
 #else
@@ -807,7 +804,6 @@ TEXT setg<>(SB),NOSPLIT|NOFRAME,$0-0
 
 	MOVW	g, R0
 	RET
-#endif
 #endif
 
 TEXT runtime·emptyfunc(SB),0,$0-0
@@ -843,7 +839,7 @@ TEXT runtime·memhash32(SB),NOSPLIT|NOFRAME,$0-12
 TEXT runtime·memhash64(SB),NOSPLIT|NOFRAME,$0-12
 	JMP	runtime·memhash64Fallback(SB)
 
-TEXT runtime·procyield(SB),NOSPLIT|NOFRAME,$0
+TEXT runtime·procyieldAsm(SB),NOSPLIT|NOFRAME,$0
 	MOVW	cycles+0(FP), R1
 	MOVW	$0, R0
 yieldloop:

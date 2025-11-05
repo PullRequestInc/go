@@ -314,7 +314,10 @@ const Ptr = Pointer
 
 // uncommonType is present only for defined types or types with methods
 // (if T is a defined type, the uncommonTypes for T and *T have methods).
-// Using a pointer to this struct reduces the overall size required
+// When present, the uncommonType struct immediately follows the
+// abi.Type struct in memory.
+// The abi.TFlagUncommon indicates the presence of uncommonType.
+// Using an optional struct reduces the overall size required
 // to describe a non-defined type with no methods.
 type uncommonType = abi.UncommonType
 
@@ -1314,7 +1317,8 @@ func TypeOf(i any) Type {
 
 // TypeFor returns the [Type] that represents the type argument T.
 func TypeFor[T any]() Type {
-	return toType(abi.TypeFor[T]())
+	// toRType is safe to use here; type is never nil as T is statically known.
+	return toRType(abi.TypeFor[T]())
 }
 
 // rtypeOf directly extracts the *rtype of the provided value.

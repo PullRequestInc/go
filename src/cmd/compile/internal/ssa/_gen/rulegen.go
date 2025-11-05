@@ -1271,8 +1271,10 @@ func genResult0(rr *RuleRewrite, arch arch, result string, top, move bool, pos s
 	case 0:
 	case 1:
 		rr.add(stmtf("%s.AddArg(%s)", v, all.String()))
-	default:
+	case 2, 3, 4, 5, 6:
 		rr.add(stmtf("%s.AddArg%d(%s)", v, len(args), all.String()))
+	default:
+		rr.add(stmtf("%s.AddArgs(%s)", v, all.String()))
 	}
 
 	if cse != nil {
@@ -1313,6 +1315,12 @@ outer:
 				d++
 			case d > 0 && s[i] == close:
 				d--
+			case s[i] == ':':
+				// ignore spaces after colons
+				nonsp = true
+				for i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\t') {
+					i++
+				}
 			default:
 				nonsp = true
 			}
@@ -1347,7 +1355,7 @@ func extract(val string) (op, typ, auxint, aux string, args []string) {
 	val = val[1 : len(val)-1] // remove ()
 
 	// Split val up into regions.
-	// Split by spaces/tabs, except those contained in (), {}, [], or <>.
+	// Split by spaces/tabs, except those contained in (), {}, [], or <> or after colon.
 	s := split(val)
 
 	// Extract restrictions and args.
@@ -1439,7 +1447,7 @@ func opHasAuxInt(op opData) bool {
 	switch op.aux {
 	case "Bool", "Int8", "Int16", "Int32", "Int64", "Int128", "UInt8", "Float32", "Float64",
 		"SymOff", "CallOff", "SymValAndOff", "TypSize", "ARM64BitField", "FlagConstant", "CCop",
-		"PanicBoundsC", "PanicBoundsCC":
+		"PanicBoundsC", "PanicBoundsCC", "ARM64ConditionalParams":
 		return true
 	}
 	return false
@@ -1471,7 +1479,7 @@ func splitNameExpr(arg string) (name, expr string) {
 		// colon is inside the parens, such as in "(Foo x:(Bar))".
 		return "", arg
 	}
-	return arg[:colon], arg[colon+1:]
+	return arg[:colon], strings.TrimSpace(arg[colon+1:])
 }
 
 func getBlockInfo(op string, arch arch) (name string, data blockData) {
@@ -1847,6 +1855,8 @@ func (op opData) auxIntType() string {
 		return "flagConstant"
 	case "ARM64BitField":
 		return "arm64BitField"
+	case "ARM64ConditionalParams":
+		return "arm64ConditionalParams"
 	case "PanicBoundsC", "PanicBoundsCC":
 		return "int64"
 	default:

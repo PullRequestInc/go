@@ -79,10 +79,13 @@ func ParseGOEXPERIMENT(goos, goarch, goexp string) (*ExperimentFlags, error) {
 	dwarf5Supported := (goos != "darwin" && goos != "ios" && goos != "aix")
 
 	baseline := goexperiment.Flags{
-		RegabiWrappers:  regabiSupported,
-		RegabiArgs:      regabiSupported,
-		AliasTypeParams: true,
-		Dwarf5:          dwarf5Supported,
+		RegabiWrappers:        regabiSupported,
+		RegabiArgs:            regabiSupported,
+		Dwarf5:                dwarf5Supported,
+		RandomizedHeapBase64:  true,
+		RuntimeFree:           true,
+		SizeSpecializedMalloc: true,
+		GreenTeaGC:            true,
 	}
 
 	// Start with the statically enabled set of experiments.
@@ -114,7 +117,7 @@ func ParseGOEXPERIMENT(goos, goarch, goexp string) (*ExperimentFlags, error) {
 		}
 
 		// Parse names.
-		for _, f := range strings.Split(goexp, ",") {
+		for f := range strings.SplitSeq(goexp, ",") {
 			if f == "" {
 				continue
 			}

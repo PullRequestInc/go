@@ -7,6 +7,7 @@ package ssa
 import (
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
+	"cmd/internal/obj"
 )
 
 // dse does dead-store elimination on the Function.
@@ -202,9 +203,27 @@ func (sr shadowRange) merge(lo, hi int64) shadowRange {
 // reaches stores then we delete all the stores. The other operations will then
 // be eliminated by the dead code elimination pass.
 func elimDeadAutosGeneric(f *Func) {
-	addr := make(map[*Value]*ir.Name) // values that the address of the auto reaches
-	elim := make(map[*Value]*ir.Name) // values that could be eliminated if the auto is
-	var used ir.NameSet               // used autos that must be kept
+	addr := make(map[*Value]*ir.Name)     // values that the address of the auto reaches
+	elim := make(map[*Value]*ir.Name)     // values that could be eliminated if the auto is
+	move := make(map[*ir.Name]ir.NameSet) // for a (Move &y &x _) and y is unused, move[y].Add(x)
+	var used ir.NameSet                   // used autos that must be kept
+
+	// Adds a name to used and, when it is the target of a move, also
+	// propagates the used state to its source.
+	var usedAdd func(n *ir.Name) bool
+	usedAdd = func(n *ir.Name) bool {
+		if used.Has(n) {
+			return false
+		}
+		used.Add(n)
+		if s := move[n]; s != nil {
+			delete(move, n)
+			for n := range s {
+				usedAdd(n)
+			}
+		}
+		return true
+	}
 
 	// visit the value and report whether any of the maps are updated
 	visit := func(v *Value) (changed bool) {
@@ -213,7 +232,7 @@ func elimDeadAutosGeneric(f *Func) {
 		case OpAddr, OpLocalAddr:
 			// Propagate the address if it points to an auto.
 			n, ok := v.Aux.(*ir.Name)
-			if !ok || n.Class != ir.PAUTO {
+			if !ok || (n.Class != ir.PAUTO && !isABIInternalParam(f, n)) {
 				return
 			}
 			if addr[v] == nil {
@@ -224,7 +243,7 @@ func elimDeadAutosGeneric(f *Func) {
 		case OpVarDef:
 			// v should be eliminated if we eliminate the auto.
 			n, ok := v.Aux.(*ir.Name)
-			if !ok || n.Class != ir.PAUTO {
+			if !ok || (n.Class != ir.PAUTO && !isABIInternalParam(f, n)) {
 				return
 			}
 			if elim[v] == nil {
@@ -240,13 +259,10 @@ func elimDeadAutosGeneric(f *Func) {
 			// may not be used by the inline code, but will be used by
 			// panic processing).
 			n, ok := v.Aux.(*ir.Name)
-			if !ok || n.Class != ir.PAUTO {
+			if !ok || (n.Class != ir.PAUTO && !isABIInternalParam(f, n)) {
 				return
 			}
-			if !used.Has(n) {
-				used.Add(n)
-				changed = true
-			}
+			changed = usedAdd(n) || changed
 			return
 		case OpStore, OpMove, OpZero:
 			// v should be eliminated if we eliminate the auto.
@@ -278,10 +294,22 @@ func elimDeadAutosGeneric(f *Func) {
 		if v.Type.IsMemory() || v.Type.IsFlags() || v.Op == OpPhi || v.MemoryArg() != nil {
 			for _, a := range args {
 				if n, ok := addr[a]; ok {
-					if !used.Has(n) {
-						used.Add(n)
-						changed = true
+					// If the addr of n is used by an OpMove as its source arg,
+					// and the OpMove's target arg is the addr of a unused name,
+					// then temporarily treat n as unused, and record in move map.
+					if nam, ok := elim[v]; ok && v.Op == OpMove && !used.Has(nam) {
+						if used.Has(n) {
+							continue
+						}
+						s := move[nam]
+						if s == nil {
+							s = ir.NameSet{}
+							move[nam] = s
+						}
+						s.Add(n)
+						continue
 					}
+					changed = usedAdd(n) || changed
 				}
 			}
 			return
@@ -290,17 +318,21 @@ func elimDeadAutosGeneric(f *Func) {
 		// Propagate any auto addresses through v.
 		var node *ir.Name
 		for _, a := range args {
-			if n, ok := addr[a]; ok && !used.Has(n) {
+			if n, ok := addr[a]; ok {
 				if node == nil {
-					node = n
-				} else if node != n {
+					if !used.Has(n) {
+						node = n
+					}
+				} else {
+					if node == n {
+						continue
+					}
 					// Most of the time we only see one pointer
 					// reaching an op, but some ops can take
 					// multiple pointers (e.g. NeqPtr, Phi etc.).
 					// This is rare, so just propagate the first
 					// value to keep things simple.
-					used.Add(n)
-					changed = true
+					changed = usedAdd(n) || changed
 				}
 			}
 		}
@@ -315,8 +347,7 @@ func elimDeadAutosGeneric(f *Func) {
 		}
 		if addr[v] != node {
 			// This doesn't happen in practice, but catch it just in case.
-			used.Add(node)
-			changed = true
+			changed = usedAdd(node) || changed
 		}
 		return
 	}
@@ -335,9 +366,8 @@ func elimDeadAutosGeneric(f *Func) {
 			}
 			// keep the auto if its address reaches a control value
 			for _, c := range b.ControlValues() {
-				if n, ok := addr[c]; ok && !used.Has(n) {
-					used.Add(n)
-					changed = true
+				if n, ok := addr[c]; ok {
+					changed = usedAdd(n) || changed
 				}
 			}
 		}
@@ -373,7 +403,7 @@ func elimUnreadAutos(f *Func) {
 			if !ok {
 				continue
 			}
-			if n.Class != ir.PAUTO {
+			if n.Class != ir.PAUTO && !isABIInternalParam(f, n) {
 				continue
 			}
 
@@ -412,4 +442,17 @@ func elimUnreadAutos(f *Func) {
 		store.AuxInt = 0
 		store.Op = OpCopy
 	}
+}
+
+// isABIInternalParam returns whether n is a parameter of an ABIInternal
+// function. For dead store elimination, we can treat parameters the same
+// way as autos. Storing to a parameter can be removed if it is not read
+// or address-taken.
+//
+// We check ABI here because for a cgo_unsafe_arg function (which is ABI0),
+// all the args are effectively address-taken, but not necessarily have
+// an Addr or LocalAddr op. We could probably just check for cgo_unsafe_arg,
+// but ABIInternal is mostly what matters.
+func isABIInternalParam(f *Func, n *ir.Name) bool {
+	return n.Class == ir.PPARAM && f.ABISelf.Which() == obj.ABIInternal
 }

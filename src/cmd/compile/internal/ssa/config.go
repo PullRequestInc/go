@@ -41,8 +41,6 @@ type Config struct {
 	hasGReg        bool      // has hardware g register
 	ctxt           *obj.Link // Generic arch information
 	optimize       bool      // Do optimization
-	useAvg         bool      // Use optimizations that need Avg* operations
-	useHmul        bool      // Use optimizations that need Hmul* operations
 	SoftFloat      bool      //
 	Race           bool      // race detector enabled
 	BigEndian      bool      //
@@ -50,6 +48,7 @@ type Config struct {
 	haveBswap64    bool      // architecture implements Bswap64
 	haveBswap32    bool      // architecture implements Bswap32
 	haveBswap16    bool      // architecture implements Bswap16
+	haveCondSelect bool      // architecture implements CondSelect
 
 	// mulRecipes[x] = function to build v * x from v.
 	mulRecipes map[int64]mulRecipe
@@ -167,8 +166,6 @@ type Frontend interface {
 // NewConfig returns a new configuration object for the given architecture.
 func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat bool) *Config {
 	c := &Config{arch: arch, Types: types}
-	c.useAvg = true
-	c.useHmul = true
 	switch arch {
 	case "amd64":
 		c.PtrSize = 8
@@ -191,6 +188,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.haveBswap64 = true
 		c.haveBswap32 = true
 		c.haveBswap16 = true
+		c.haveCondSelect = true
 	case "386":
 		c.PtrSize = 4
 		c.RegSize = 4
@@ -236,6 +234,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.haveBswap64 = true
 		c.haveBswap32 = true
 		c.haveBswap16 = true
+		c.haveCondSelect = true
 	case "ppc64":
 		c.BigEndian = true
 		fallthrough
@@ -263,6 +262,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.haveBswap64 = true
 		c.haveBswap32 = true
 		c.haveBswap16 = true
+		c.haveCondSelect = true
 	case "mips64":
 		c.BigEndian = true
 		fallthrough
@@ -271,6 +271,8 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.RegSize = 8
 		c.lowerBlock = rewriteBlockMIPS64
 		c.lowerValue = rewriteValueMIPS64
+		c.lateLowerBlock = rewriteBlockMIPS64latelower
+		c.lateLowerValue = rewriteValueMIPS64latelower
 		c.registers = registersMIPS64[:]
 		c.gpRegMask = gpRegMaskMIPS64
 		c.fpRegMask = fpRegMaskMIPS64
@@ -294,6 +296,7 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.LinkReg = linkRegLOONG64
 		c.hasGReg = true
 		c.unalignedOK = true
+		c.haveCondSelect = true
 	case "s390x":
 		c.PtrSize = 8
 		c.RegSize = 8
@@ -352,8 +355,8 @@ func NewConfig(arch string, types Types, ctxt *obj.Link, optimize, softfloat boo
 		c.FPReg = framepointerRegWasm
 		c.LinkReg = linkRegWasm
 		c.hasGReg = true
-		c.useAvg = false
-		c.useHmul = false
+		c.unalignedOK = true
+		c.haveCondSelect = true
 	default:
 		ctxt.Diag("arch %s not implemented", arch)
 	}
@@ -566,7 +569,7 @@ func (c *Config) buildRecipes(arch string) {
 		}
 	case "loong64":
 		// - multiply is 4 cycles.
-		// - add/sub/shift are 1 cycle.
+		// - add/sub/shift/alsl are 1 cycle.
 		// On loong64, using a multiply also needs to load the constant into a register.
 		// TODO: figure out a happy medium.
 		mulCost = 45
@@ -599,6 +602,15 @@ func (c *Config) buildRecipes(arch string) {
 			r(1<<i, 0, c,
 				func(m, x, y *Value) *Value {
 					return m.Block.NewValue1I(m.Pos, OpLOONG64SLLVconst, m.Type, int64(i), x)
+				})
+		}
+
+		// ADDshiftLLV
+		for i := 1; i < 5; i++ {
+			c := 10
+			r(1, 1<<i, c,
+				func(m, x, y *Value) *Value {
+					return m.Block.NewValue2I(m.Pos, OpLOONG64ADDshiftLLV, m.Type, int64(i), x, y)
 				})
 		}
 	}
@@ -718,7 +730,7 @@ func (c *Config) buildRecipes(arch string) {
 	// Currently:
 	// len(c.mulRecipes) == 5984 on arm64
 	//                       680 on amd64
-	//                      5984 on loong64
+	//                      9738 on loong64
 	// This function takes ~2.5ms on arm64.
 	//println(len(c.mulRecipes))
 }

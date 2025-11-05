@@ -31,7 +31,7 @@ func (s *biasedSparseMap) cap() int {
 	if s == nil || s.s == nil {
 		return 0
 	}
-	return s.s.cap() + int(s.first)
+	return s.s.cap() + s.first
 }
 
 // size returns the number of entries stored in s
@@ -82,14 +82,6 @@ func (s *biasedSparseMap) getEntry(i int) (x uint, v int32) {
 	x = uint(int(e.key) + s.first)
 	v = e.val
 	return
-}
-
-// add inserts x->0 into s, provided that x is in the range of keys stored in s.
-func (s *biasedSparseMap) add(x uint) {
-	if int(x) < s.first || int(x) >= s.cap() {
-		return
-	}
-	s.s.set(ID(int(x)-s.first), 0)
 }
 
 // add inserts x->v into s, provided that x is in the range of keys stored in s.

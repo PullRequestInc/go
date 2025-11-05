@@ -47,7 +47,7 @@ const (
 	//
 	// Must be a multiple of the pageInUse bitmap element size and
 	// must also evenly divide pagesPerArena.
-	pagesPerReclaimerChunk = 512
+	pagesPerReclaimerChunk = min(512, pagesPerArena)
 
 	// physPageAlignedStacks indicates whether stack allocations must be
 	// physical page aligned. This is a requirement for MAP_STACK on
@@ -213,13 +213,14 @@ type mheap struct {
 		pad      [(cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize) % cpu.CacheLinePadSize]byte
 	}
 
-	spanalloc                  fixalloc // allocator for span*
-	cachealloc                 fixalloc // allocator for mcache*
-	specialfinalizeralloc      fixalloc // allocator for specialfinalizer*
-	specialCleanupAlloc        fixalloc // allocator for specialCleanup*
-	specialCheckFinalizerAlloc fixalloc // allocator for specialCheckFinalizer*
-	specialTinyBlockAlloc      fixalloc // allocator for specialTinyBlock*
-	specialprofilealloc        fixalloc // allocator for specialprofile*
+	spanalloc                  fixalloc // allocator for span
+	spanSPMCAlloc              fixalloc // allocator for spanSPMC, protected by work.spanSPMCs.lock
+	cachealloc                 fixalloc // allocator for mcache
+	specialfinalizeralloc      fixalloc // allocator for specialfinalizer
+	specialCleanupAlloc        fixalloc // allocator for specialCleanup
+	specialCheckFinalizerAlloc fixalloc // allocator for specialCheckFinalizer
+	specialTinyBlockAlloc      fixalloc // allocator for specialTinyBlock
+	specialprofilealloc        fixalloc // allocator for specialprofile
 	specialReachableAlloc      fixalloc // allocator for specialReachable
 	specialPinCounterAlloc     fixalloc // allocator for specialPinCounter
 	specialWeakHandleAlloc     fixalloc // allocator for specialWeakHandle
@@ -793,6 +794,7 @@ func (h *mheap) init() {
 	lockInit(&h.speciallock, lockRankMheapSpecial)
 
 	h.spanalloc.init(unsafe.Sizeof(mspan{}), recordspan, unsafe.Pointer(h), &memstats.mspan_sys)
+	h.spanSPMCAlloc.init(unsafe.Sizeof(spanSPMC{}), nil, nil, &memstats.gcMiscSys)
 	h.cachealloc.init(unsafe.Sizeof(mcache{}), nil, nil, &memstats.mcache_sys)
 	h.specialfinalizeralloc.init(unsafe.Sizeof(specialfinalizer{}), nil, nil, &memstats.other_sys)
 	h.specialCleanupAlloc.init(unsafe.Sizeof(specialCleanup{}), nil, nil, &memstats.other_sys)
@@ -821,6 +823,8 @@ func (h *mheap) init() {
 	}
 
 	h.pages.init(&h.lock, &memstats.gcMiscSys, false)
+
+	xRegInitAlloc()
 }
 
 // reclaim sweeps and reclaims at least npage pages into the heap.
@@ -1390,7 +1394,7 @@ HaveSpan:
 	}
 
 	// Initialize the span.
-	h.initSpan(s, typ, spanclass, base, npages)
+	h.initSpan(s, typ, spanclass, base, npages, scav)
 
 	if valgrindenabled {
 		valgrindMempoolMalloc(unsafe.Pointer(arenaBase(arenaIndex(base))), unsafe.Pointer(base), npages*pageSize)
@@ -1436,11 +1440,17 @@ HaveSpan:
 
 // initSpan initializes a blank span s which will represent the range
 // [base, base+npages*pageSize). typ is the type of span being allocated.
-func (h *mheap) initSpan(s *mspan, typ spanAllocType, spanclass spanClass, base, npages uintptr) {
+func (h *mheap) initSpan(s *mspan, typ spanAllocType, spanclass spanClass, base, npages, scav uintptr) {
 	// At this point, both s != nil and base != 0, and the heap
 	// lock is no longer held. Initialize the span.
 	s.init(base, npages)
-	if h.allocNeedsZero(base, npages) {
+	// Always call allocNeedsZero to update the arena's zeroedBase watermark
+	// and determine if the memory is considered dirty.
+	needZero := h.allocNeedsZero(base, npages)
+	// If these pages were scavenged (returned to the OS), the kernel guarantees
+	// they will be zero-filled on next use (fault-in), so we can treat them as
+	// already zeroed and skip explicit clearing.
+	if (needZeroAfterSysUnused() || scav != npages*pageSize) && needZero {
 		s.needzero = 1
 	}
 	nbytes := npages * pageSize
@@ -1933,86 +1943,6 @@ func (list *mSpanList) takeAll(other *mSpanList) {
 	}
 
 	other.first, other.last = nil, nil
-}
-
-// mSpanQueue is like an mSpanList but is FIFO instead of LIFO and may
-// be allocated on the stack. (mSpanList can be visible from the mspan
-// itself, so it is marked as not-in-heap).
-type mSpanQueue struct {
-	head, tail *mspan
-	n          int
-}
-
-// push adds s to the end of the queue.
-func (q *mSpanQueue) push(s *mspan) {
-	if s.next != nil {
-		throw("span already on list")
-	}
-	if q.tail == nil {
-		q.tail, q.head = s, s
-	} else {
-		q.tail.next = s
-		q.tail = s
-	}
-	q.n++
-}
-
-// pop removes a span from the head of the queue, if any.
-func (q *mSpanQueue) pop() *mspan {
-	if q.head == nil {
-		return nil
-	}
-	s := q.head
-	q.head = s.next
-	s.next = nil
-	if q.head == nil {
-		q.tail = nil
-	}
-	q.n--
-	return s
-}
-
-// takeAll removes all the spans from q2 and adds them to the end of q1, in order.
-func (q1 *mSpanQueue) takeAll(q2 *mSpanQueue) {
-	if q2.head == nil {
-		return
-	}
-	if q1.head == nil {
-		*q1 = *q2
-	} else {
-		q1.tail.next = q2.head
-		q1.tail = q2.tail
-		q1.n += q2.n
-	}
-	q2.tail = nil
-	q2.head = nil
-	q2.n = 0
-}
-
-// popN removes n spans from the head of the queue and returns them as a new queue.
-func (q *mSpanQueue) popN(n int) mSpanQueue {
-	var newQ mSpanQueue
-	if n <= 0 {
-		return newQ
-	}
-	if n >= q.n {
-		newQ = *q
-		q.tail = nil
-		q.head = nil
-		q.n = 0
-		return newQ
-	}
-	s := q.head
-	for range n - 1 {
-		s = s.next
-	}
-	q.n -= n
-	newQ.head = q.head
-	newQ.tail = s
-	newQ.n = n
-	q.head = s.next
-	s.next = nil
-	return newQ
 }
 
 const (

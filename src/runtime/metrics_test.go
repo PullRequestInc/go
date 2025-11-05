@@ -1575,3 +1575,12 @@ func TestReadMetricsFinalizers(t *testing.T) {
 		t.Errorf("expected %s difference to be exactly %d, got %d -> %d", before[1].Name, N, v0, v1)
 	}
 }
+
+func TestReadMetricsSched(t *testing.T) {
+	// This test is run in a subprocess to prevent other tests from polluting the metrics.
+	output := runTestProg(t, "testprog", "SchedMetrics")
+	want := "OK\n"
+	if output != want {
+		t.Fatalf("output:\n%s\n\nwanted:\n%s", output, want)
+	}
+}

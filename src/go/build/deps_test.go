@@ -69,6 +69,7 @@ var depsRules = `
 
 	internal/goarch < internal/abi;
 	internal/byteorder, internal/cpu, internal/goarch < internal/chacha8rand;
+	internal/goarch, math/bits < internal/strconv;
 
 	# RUNTIME is the core runtime group of packages, all of them very light-weight.
 	internal/abi,
@@ -80,12 +81,12 @@ var depsRules = `
 	internal/goexperiment,
 	internal/goos,
 	internal/profilerecord,
+	internal/strconv,
 	internal/trace/tracev2,
 	math/bits,
 	structs
 	< internal/bytealg
 	< internal/stringslite
-	< internal/itoa
 	< internal/unsafeheader
 	< internal/race
 	< internal/msan
@@ -98,8 +99,8 @@ var depsRules = `
 	< internal/runtime/gc
 	< internal/runtime/math
 	< internal/runtime/maps
-	< internal/runtime/strconv
 	< internal/runtime/cgroup
+	< internal/runtime/gc/scan
 	< runtime
 	< sync/atomic
 	< internal/sync
@@ -236,7 +237,6 @@ var depsRules = `
 	  internal/types/errors,
 	  mime/quotedprintable,
 	  net/internal/socktest,
-	  net/url,
 	  runtime/trace,
 	  text/scanner,
 	  text/tabwriter;
@@ -298,6 +298,12 @@ var depsRules = `
 	# templates
 	FMT
 	< text/template/parse;
+
+	internal/bytealg, math/bits, slices, strconv, unique
+	< net/netip;
+
+	FMT, net/netip
+	< net/url;
 
 	net/url, text/template/parse
 	< text/template
@@ -413,9 +419,6 @@ var depsRules = `
 	< golang.org/x/net/dns/dnsmessage,
 	  golang.org/x/net/lif;
 
-	internal/bytealg, internal/itoa, math/bits, slices, strconv, unique
-	< net/netip;
-
 	os, net/netip
 	< internal/routebsd;
 
@@ -476,6 +479,8 @@ var depsRules = `
 
 	io, math/rand/v2 < crypto/internal/randutil;
 
+	NONE < crypto/internal/constanttime;
+
 	STR < crypto/internal/impl;
 
 	OS < crypto/internal/sysrand
@@ -484,11 +489,17 @@ var depsRules = `
 	internal/byteorder < crypto/internal/fips140deps/byteorder;
 	internal/cpu, internal/goarch < crypto/internal/fips140deps/cpu;
 	internal/godebug < crypto/internal/fips140deps/godebug;
+	time, internal/syscall/windows < crypto/internal/fips140deps/time;
+
+	crypto/internal/fips140deps/time, errors, math/bits, sync/atomic, unsafe
+	< crypto/internal/entropy/v1.0.0;
 
 	STR, hash,
 	crypto/internal/impl,
 	crypto/internal/entropy,
 	crypto/internal/randutil,
+	crypto/internal/constanttime,
+	crypto/internal/entropy/v1.0.0,
 	crypto/internal/fips140deps/byteorder,
 	crypto/internal/fips140deps/cpu,
 	crypto/internal/fips140deps/godebug
@@ -558,7 +569,7 @@ var depsRules = `
 
 	# CRYPTO-MATH is crypto that exposes math/big APIs - no cgo, net; fmt now ok.
 
-	CRYPTO, FMT, math/big
+	CRYPTO, FMT, math/big, internal/saferio
 	< crypto/internal/boring/bbig
 	< crypto/internal/fips140cache
 	< crypto/rand
@@ -741,12 +752,6 @@ var depsRules = `
 	FMT, encoding/binary, internal/trace/version, internal/trace/internal/tracev1, container/heap, math/rand
 	< internal/trace;
 
-	regexp, internal/trace, internal/trace/raw, internal/txtar
-	< internal/trace/testtrace;
-
-	regexp, internal/txtar, internal/trace, internal/trace/raw
-	< internal/trace/internal/testgen;
-
 	# cmd/trace dependencies.
 	FMT,
 	embed,
@@ -791,12 +796,42 @@ var depsRules = `
 	< testing/internal/testdeps;
 
 	# Test-only packages can have anything they want
-	FMT, compress/gzip, embed, encoding/binary < encoding/json/internal/jsontest;
-	CGO, internal/syscall/unix < net/internal/cgotest;
-	FMT < math/big/internal/asmgen;
 
-	FMT, testing < internal/cgrouptest;
-	C, CGO < internal/runtime/cgobench;
+	FMT, compress/gzip, embed, encoding/binary
+	< encoding/json/internal/jsontest;
+
+	CGO, internal/syscall/unix
+	< net/internal/cgotest;
+
+	FMT, testing
+	< internal/cgrouptest;
+
+	regexp, internal/testenv, internal/trace, internal/trace/raw, internal/txtar, testing
+	< internal/trace/testtrace;
+
+	C, CGO
+	< internal/runtime/cgobench;
+
+	# Generate-only packages can have anything they want.
+
+	container/heap,
+	encoding/binary,
+	fmt,
+	hash/maphash,
+	io,
+	log,
+	math/bits,
+	os,
+	reflect,
+	strings,
+	sync
+	< internal/runtime/gc/internal/gen;
+
+	regexp, internal/txtar, internal/trace, internal/trace/raw
+	< internal/trace/internal/testgen;
+
+	FMT
+	< math/big/internal/asmgen;
 `
 
 // listStdPkgs returns the same list of packages as "go list std".
