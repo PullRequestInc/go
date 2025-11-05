@@ -28,8 +28,18 @@ jobs:
         run: |
           git remote add upstream https://github.com/golang/go.git
           git fetch upstream
-          git checkout -B master upstream/master
-          git push origin master --force
+          git checkout master
+
+          # Check if master can be fast-forwarded
+          if git merge-base --is-ancestor master upstream/master; then
+            echo "✅ Fast-forwarding master to upstream/master"
+            git merge --ff-only upstream/master
+            git push origin master
+          else
+            echo "⚠️ Cannot fast-forward master - there are divergent changes"
+            echo "Local master and upstream/master have diverged"
+            exit 1
+          fi
 
   mirror-prs:
     name: Mirror and Sync PRs
