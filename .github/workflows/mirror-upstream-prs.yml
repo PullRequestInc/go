@@ -84,14 +84,21 @@ jobs:
 
           echo "🔄 Processing upstream PR #$pr_num from branch '$pr_branch'..."
 
-          # Fetch the upstream PR into a local branch
+          # Check if the branch already exists on origin
+          if git ls-remote --heads origin "$pr_branch" | grep -q "$pr_branch"; then
+            echo "ℹ️ Branch $pr_branch already exists, skipping update"
+            continue
+          fi
+
+          # Fetch the upstream PR into a local branch (only for new branches)
           git fetch upstream "$upstream_ref:$pr_branch" || {
             echo "❌ Failed to fetch upstream PR #$pr_num ($pr_branch)"
             continue
           }
 
-          # Push the branch to your fork
-          git push origin "$pr_branch" --force || {
+          # Push the new branch to your fork
+          echo "✨ New branch $pr_branch, pushing..."
+          git push origin "$pr_branch" || {
             echo "❌ Failed to push $pr_branch to origin"
             continue
           }
