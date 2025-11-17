@@ -953,6 +953,18 @@ typedef struct {
 } issue69086struct;
 static int issue690861(issue69086struct* p) { p->b = 1234; return p->c; }
 static int issue690862(unsigned long ul1, unsigned long ul2, unsigned int u, issue69086struct s) { return (int)(s.b); }
+
+typedef struct { void *t; void *v; } GoInterface;
+extern int exportAnyParam(GoInterface);
+extern GoInterface exportAnyReturn(int);
+
+int testAnyFromC(GoInterface obj) {
+	return exportAnyParam(obj);
+}
+
+GoInterface testAnyReturnFromC(int val) {
+	return exportAnyReturn(val);
+}
 */
 import "C"
 
@@ -2394,5 +2406,23 @@ func test69086(t *testing.T) {
 	got = C.issue690862(1, 2, 3, s)
 	if got != 1234 {
 		t.Errorf("call: got %d, want 1234", got)
+	}
+}
+
+func testAny(t *testing.T) {
+	var emptyInterface C.GoInterface
+	r1 := C.testAnyFromC(emptyInterface)
+	if r1 != 0 {
+		t.Errorf("testAnyFromC with nil interface: got %d, want 0", r1)
+	}
+
+	r2 := C.testAnyReturnFromC(42)
+	if r2.t == nil && r2.v == nil {
+		t.Error("testAnyReturnFromC(42) returned nil interface")
+	}
+
+	r3 := C.testAnyReturnFromC(0)
+	if r3.t != nil || r3.v != nil {
+		t.Errorf("testAnyReturnFromC(0) returned non-nil interface: got %v, want nil", r3)
 	}
 }
